@@ -1,0 +1,54 @@
+name: Daily Job Scraper
+
+on:
+  schedule:
+    # Run daily at 9:00 AM UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  scrape-jobs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install Playwright
+      run: |
+        python -m pip install --upgrade pip
+        pip install playwright
+        playwright install chromium
+        
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        
+    - name: Run scraper
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        python playwright_scraper.py
+        
+    - name: Run job validator
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        python job_validator.py
+        
+    - name: Upload artifacts (if any)
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: scraper-results
+        path: |
+          *.json
+          *.csv
+        retention-days: 7 
