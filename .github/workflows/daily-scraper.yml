@@ -29,22 +29,40 @@ jobs:
       run: |
         pip install -r requirements.txt
         
+    - name: Check environment setup
+      run: |
+        echo "Checking environment variables..."
+        if [ -z "$SUPABASE_URL" ]; then
+          echo "Warning: SUPABASE_URL is not set"
+        else
+          echo "SUPABASE_URL is configured"
+        fi
+        if [ -z "$SUPABASE_ANON_KEY" ]; then
+          echo "Warning: SUPABASE_ANON_KEY is not set"
+        else
+          echo "SUPABASE_ANON_KEY is configured"
+        fi
+        
     - name: Run scraper
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
+        echo "Starting Jobindex scraper..."
         python playwright_scraper.py
+        echo "Scraper completed successfully"
         
     - name: Run job validator
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
+        echo "Starting job validation..."
         python job_validator.py
+        echo "Job validation completed successfully"
         
     - name: Upload artifacts (if any)
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: scraper-results
