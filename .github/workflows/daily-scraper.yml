@@ -43,6 +43,14 @@ jobs:
           echo "SUPABASE_ANON_KEY is configured"
         fi
         
+    - name: Test Supabase connection
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        echo "Testing Supabase connection before running scripts..."
+        python test_supabase_connection.py
+        
     - name: Run scraper
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
