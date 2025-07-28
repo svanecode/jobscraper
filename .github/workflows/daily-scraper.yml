@@ -62,21 +62,12 @@ jobs:
         python playwright_scraper.py
         echo "Scraper completed successfully"
         
-    - name: Run job validator (dry run first)
+    - name: Run job validator
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
-        echo "Starting job validation (dry run)..."
-        python job_validator_auto.py --dry-run
-        echo "Job validation dry run completed"
-        
-    - name: Run job validator (actual validation)
-      env:
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-      run: |
-        echo "Starting actual job validation..."
+        echo "Starting job validation..."
         python job_validator_auto.py
         echo "Job validation completed successfully"
         

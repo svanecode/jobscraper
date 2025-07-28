@@ -9,7 +9,6 @@ on Jobindex (e.g., "Annoncen er udløbet!" - The ad has expired).
 import asyncio
 import logging
 import os
-import sys
 from datetime import datetime
 from playwright.async_api import async_playwright
 from supabase import create_client, Client
@@ -41,14 +40,13 @@ class AutomatedJobValidator:
             logger.error("Supabase credentials not provided. Cannot proceed.")
             raise ValueError("Supabase credentials required")
     
-    async def validate_jobs(self, batch_size=20, max_jobs=None, dry_run=False):
+    async def validate_jobs(self, batch_size=20, max_jobs=None):
         """
         Validate all jobs in the database and soft delete expired ones
         
         Args:
             batch_size: Number of jobs to process in parallel
             max_jobs: Maximum number of jobs to check (for testing)
-            dry_run: If True, don't actually delete jobs, just report what would be deleted
         """
         # Get all active jobs from database
         jobs = self.get_active_jobs(max_jobs)
@@ -91,15 +89,11 @@ class AutomatedJobValidator:
                     continue
                 
                 if not result:  # Job is expired
-                    if dry_run:
-                        logger.info(f"[DRY RUN] Would delete expired job: {job['title']} ({job['job_id']})")
+                    if self.soft_delete_job(job['job_id']):
                         total_deleted += 1
+                        logger.info(f"Soft deleted expired job: {job['title']} ({job['job_id']})")
                     else:
-                        if self.soft_delete_job(job['job_id']):
-                            total_deleted += 1
-                            logger.info(f"Soft deleted expired job: {job['title']} ({job['job_id']})")
-                        else:
-                            logger.error(f"Failed to soft delete job: {job['job_id']}")
+                        logger.error(f"Failed to soft delete job: {job['job_id']}")
                 else:
                     logger.debug(f"Job still valid: {job['title']} ({job['job_id']})")
             
@@ -118,7 +112,7 @@ class AutomatedJobValidator:
             # Small delay between batches to be respectful
             await asyncio.sleep(0.5)
         
-        logger.info(f"Validation complete: {total_checked} jobs checked, {total_deleted} jobs {'would be ' if dry_run else ''}soft deleted, {total_errors} errors")
+        logger.info(f"Validation complete: {total_checked} jobs checked, {total_deleted} jobs soft deleted, {total_errors} errors")
         return {
             'total_checked': total_checked,
             'total_deleted': total_deleted,
@@ -264,9 +258,6 @@ async def main():
     print("Automated Jobindex Job Validator")
     print("=" * 50)
     
-    # Check if dry run mode is requested
-    dry_run = '--dry-run' in sys.argv
-    
     try:
         # Initialize validator
         validator = AutomatedJobValidator()
@@ -281,17 +272,13 @@ async def main():
             print(f"  Deletion rate: {stats['deletion_rate']:.1f}%")
         
         # Run validation
-        if dry_run:
-            print(f"\nStarting dry run validation...")
-            results = await validator.validate_jobs(batch_size=20, max_jobs=None, dry_run=True)
-        else:
-            print(f"\nStarting full validation...")
-            results = await validator.validate_jobs(batch_size=20, max_jobs=None, dry_run=False)
+        print(f"\nStarting job validation...")
+        results = await validator.validate_jobs(batch_size=20, max_jobs=None)
         
         if results:
             print(f"\nValidation Results:")
             print(f"  Jobs checked: {results['total_checked']}")
-            print(f"  Jobs {'would be ' if dry_run else ''}soft deleted: {results['total_deleted']}")
+            print(f"  Jobs soft deleted: {results['total_deleted']}")
             print(f"  Errors: {results['total_errors']}")
             
             # Show updated stats
