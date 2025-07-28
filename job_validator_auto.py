@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Job Validator - Check and soft delete expired job listings
+Automated Job Validator - Runs without user interaction for GitHub Actions
 
 This script checks all jobs in the database and marks them as deleted if they're no longer available
 on Jobindex (e.g., "Annoncen er udløbet!" - The ad has expired).
@@ -9,6 +9,7 @@ on Jobindex (e.g., "Annoncen er udløbet!" - The ad has expired).
 import asyncio
 import logging
 import os
+import sys
 from datetime import datetime
 from playwright.async_api import async_playwright
 from supabase import create_client, Client
@@ -24,7 +25,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class JobValidator:
+class AutomatedJobValidator:
     def __init__(self, supabase_url=None, supabase_key=None):
         self.base_url = "https://www.jobindex.dk"
         
@@ -45,7 +46,7 @@ class JobValidator:
         Validate all jobs in the database and soft delete expired ones
         
         Args:
-            batch_size: Number of jobs to process in parallel (increased default for better performance)
+            batch_size: Number of jobs to process in parallel
             max_jobs: Maximum number of jobs to check (for testing)
             dry_run: If True, don't actually delete jobs, just report what would be deleted
         """
@@ -54,7 +55,11 @@ class JobValidator:
         
         if not jobs:
             logger.info("No active jobs found in database")
-            return
+            return {
+                'total_checked': 0,
+                'total_deleted': 0,
+                'total_errors': 0
+            }
         
         logger.info(f"Found {len(jobs)} active jobs to validate")
         
@@ -62,6 +67,9 @@ class JobValidator:
         total_checked = 0
         total_deleted = 0
         total_errors = 0
+        
+        # Set start time for progress tracking
+        self.start_time = datetime.now()
         
         for i in range(0, len(jobs), batch_size):
             batch = jobs[i:i + batch_size]
@@ -225,37 +233,6 @@ class JobValidator:
             logger.error(f"Error soft deleting job {job_id}: {e}")
             return False
     
-    def restore_job(self, job_id):
-        """Restore a soft deleted job by clearing deleted_at timestamp"""
-        try:
-            result = self.supabase.table('jobs').update({
-                'deleted_at': None
-            }).eq('job_id', job_id).execute()
-            
-            if result.data:
-                logger.info(f"Restored job: {job_id}")
-                return True
-            else:
-                logger.warning(f"No rows updated for job_id: {job_id}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error restoring job {job_id}: {e}")
-            return False
-    
-    def restore_jobs_by_ids(self, job_ids):
-        """Restore multiple jobs by their IDs"""
-        if not job_ids:
-            return 0
-        
-        restored_count = 0
-        for job_id in job_ids:
-            if self.restore_job(job_id):
-                restored_count += 1
-        
-        logger.info(f"Restored {restored_count} out of {len(job_ids)} jobs")
-        return restored_count
-    
     def get_deletion_stats(self):
         """Get statistics about deleted jobs"""
         try:
@@ -283,13 +260,16 @@ class JobValidator:
 
 
 async def main():
-    """Main function to run the job validator"""
-    print("Jobindex Job Validator - Check and Soft Delete Expired Jobs")
-    print("=" * 60)
+    """Main function to run the automated job validator"""
+    print("Automated Jobindex Job Validator")
+    print("=" * 50)
+    
+    # Check if dry run mode is requested
+    dry_run = '--dry-run' in sys.argv
     
     try:
         # Initialize validator
-        validator = JobValidator()
+        validator = AutomatedJobValidator()
         
         # Show current stats
         stats = validator.get_deletion_stats()
@@ -300,38 +280,18 @@ async def main():
             print(f"  Deleted jobs: {stats['deleted_jobs']}")
             print(f"  Deletion rate: {stats['deletion_rate']:.1f}%")
         
-        # Ask user for options
-        print(f"\nOptions:")
-        print(f"  1. Dry run (check but don't delete) - recommended first")
-        print(f"  2. Full validation (check and delete expired jobs)")
-        print(f"  3. Test with small batch (20 jobs)")
-        print(f"  4. Fast validation (larger batches, shorter timeouts)")
-        
-        choice = input("\nEnter your choice (1-4): ").strip()
-        
-        # Set start time for progress tracking
-        validator.start_time = datetime.now()
-        
-        if choice == "1":
+        # Run validation
+        if dry_run:
             print(f"\nStarting dry run validation...")
             results = await validator.validate_jobs(batch_size=20, max_jobs=None, dry_run=True)
-        elif choice == "2":
+        else:
             print(f"\nStarting full validation...")
             results = await validator.validate_jobs(batch_size=20, max_jobs=None, dry_run=False)
-        elif choice == "3":
-            print(f"\nStarting test validation with 20 jobs...")
-            results = await validator.validate_jobs(batch_size=10, max_jobs=20, dry_run=True)
-        elif choice == "4":
-            print(f"\nStarting fast validation...")
-            results = await validator.validate_jobs(batch_size=30, max_jobs=None, dry_run=True)
-        else:
-            print("Invalid choice. Exiting.")
-            return
         
         if results:
             print(f"\nValidation Results:")
             print(f"  Jobs checked: {results['total_checked']}")
-            print(f"  Jobs {'would be ' if choice in ['1', '3', '4'] else ''}soft deleted: {results['total_deleted']}")
+            print(f"  Jobs {'would be ' if dry_run else ''}soft deleted: {results['total_deleted']}")
             print(f"  Errors: {results['total_errors']}")
             
             # Show updated stats
@@ -346,6 +306,7 @@ async def main():
     except Exception as e:
         logger.error(f"Error in main: {e}")
         print(f"Error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
