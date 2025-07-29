@@ -1,4 +1,4 @@
-name: Daily Job Scraper and Validator
+name: Daily Job Validator, Scraper and AI Scorer
 
 on:
   schedule:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:  # Allow manual triggering
 
 jobs:
-  scrape-and-validate:
+  validate-scrape-score:
     runs-on: ubuntu-latest
     
     steps:
@@ -30,6 +30,8 @@ jobs:
     - name: Install dependencies
       run: |
         pip install -r requirements.txt
+        # Install OpenAI for AI scoring
+        pip install openai
         
     - name: Check environment setup
       run: |
@@ -44,6 +46,11 @@ jobs:
         else
           echo "SUPABASE_ANON_KEY is configured"
         fi
+        if [ -z "$OPENAI_API_KEY" ]; then
+          echo "Warning: OPENAI_API_KEY is not set (required for AI scoring)"
+        else
+          echo "OPENAI_API_KEY is configured"
+        fi
         
     - name: Test Supabase connection
       env:
@@ -52,6 +59,15 @@ jobs:
       run: |
         echo "Testing Supabase connection before running scripts..."
         python test_supabase_connection.py
+        
+    - name: Run job validator (oldest jobs first)
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        echo "Starting job validation (checking oldest jobs first)..."
+        python job_validator_auto.py
+        echo "Job validation completed successfully"
         
     - name: Run scraper
       env:
@@ -62,14 +78,15 @@ jobs:
         python playwright_scraper.py
         echo "Scraper completed successfully"
         
-    - name: Run job validator
+    - name: Run AI job scorer
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
-        echo "Starting job validation..."
-        python job_validator_auto.py
-        echo "Job validation completed successfully"
+        echo "Starting AI job scoring..."
+        python job_scorer.py
+        echo "AI job scoring completed successfully"
         
     - name: Upload artifacts (if any)
       uses: actions/upload-artifact@v4
@@ -84,11 +101,11 @@ jobs:
     - name: Send notification on success
       if: success()
       run: |
-        echo "✅ Daily job scraping and validation completed successfully!"
-        echo "📊 New jobs scraped and expired jobs cleaned up"
+        echo "✅ Daily job validation, scraping and AI scoring completed successfully!"
+        echo "📊 Expired jobs cleaned up, new jobs scraped, and jobs scored for CFO services"
         
     - name: Send notification on failure
       if: failure()
       run: |
-        echo "❌ Daily job scraping and validation failed!"
+        echo "❌ Daily job validation, scraping and AI scoring failed!"
         echo "Please check the logs for details" 

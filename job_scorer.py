@@ -1,15 +1,32 @@
 #!/usr/bin/env python3
 """
-Job Scorer - Score jobs based on CFO Interim Services criteria
+Du er en dansk sprogmodel og skal vurdere danske jobopslag.
 
-This script fetches all jobs from the database and scores them based on how likely they are
-to need temporary CFO/economic assistance services.
+Din opgave er at give hvert jobopslag en score fra 0 til 3 baseret på, hvor sandsynligt det er, at virksomheden har brug for midlertidig CFO- eller økonomiassistance (CFO Interim Services).
 
-Scoring system:
-- 3 = Akut/midlertidigt og økonomirelateret → KPMG bør tage kontakt straks
-- 2 = Økonomistilling hvor behovet kunne være der
-- 1 = Lav sandsynlighed, men økonomirelateret
-- 0 = Ikke økonomirelateret
+Scoringssystem:
+
+3 = Akut eller midlertidigt og økonomirelateret → KPMG bør tage kontakt straks
+2 = Økonomistilling, hvor behovet kunne være til stede
+1 = Lav sandsynlighed, men økonomirelateret
+0 = Ikke økonomirelateret
+Vigtigt: KPMG er et konsulenthus, og vi er ikke interesserede i jobopslag fra andre konsulenthuse (fx Deloitte, EY, PwC, BDO osv.).
+
+Du skal analysere både jobtitel, virksomhedens navn og jobbeskrivelsen.
+
+Økonomirelaterede stillinger omfatter fx: regnskab, controlling, bogholderi, økonomistyring, CFO, økonomichef, business partner, rapportering og budgettering.
+
+Hvis informationen er begrænset, så vurder ud fra det tilgængelige – vurder hellere lavt end for optimistisk.
+
+Returnér kun scoren som et heltal: 0, 1, 2 eller 3. Ingen ekstra tekst.
+
+Eksempler:
+
+“Interim regnskabschef i barselsvikariat” → 3
+“Finance Business Partner med fokus på controlling” → 2
+“Studiejob i økonomiafdelingen” → 1
+“HR-chef med ansvar for personaleudvikling” → 0
+“Managementkonsulent i Deloitte” → 0
 """
 
 import asyncio

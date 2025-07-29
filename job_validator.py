@@ -125,6 +125,7 @@ class JobValidator:
             total_active = count_result.count or 0
             
             logger.info(f"Found {total_active} total active jobs in database")
+            logger.info("Jobs will be processed by oldest publication_date first")
             
             if total_active == 0:
                 logger.info("No active jobs found in database")
@@ -144,7 +145,7 @@ class JobValidator:
             for offset in range(0, limit, chunk_size):
                 current_chunk_size = min(chunk_size, limit - offset)
                 
-                query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').range(offset, offset + current_chunk_size - 1)
+                query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date', desc=False).range(offset, offset + current_chunk_size - 1)
                 result = query.execute()
                 
                 if result.data:

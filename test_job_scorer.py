@@ -25,7 +25,7 @@ async def test_scoring():
         
         await scorer.score_all_jobs(
             batch_size=2,  # Small batch size for testing
-            max_jobs=5,    # Only test with 5 jobs
+            max_jobs=100,    # Only test with 5 jobs
             delay=1.0,     # 1 second delay between batches
             only_unscored=True  # Only score jobs that haven't been scored yet
         )
