@@ -60,14 +60,35 @@ jobs:
         echo "Testing Supabase connection before running scripts..."
         python test_supabase_connection.py
         
+    - name: Test GitHub Actions environment
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        echo "Testing GitHub Actions environment for validator..."
+        python test_github_actions_validator.py
+        
     - name: Run job validator (oldest jobs first)
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
-        echo "Starting job validation (checking oldest jobs first)..."
-        python job_validator_auto.py
+        echo "Starting GitHub Actions optimized job validation..."
+        python job_validator_github_actions.py
         echo "Job validation completed successfully"
+        
+    - name: Check validator results
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        echo "Checking validator results..."
+        python -c "
+        from job_validator_github_actions import GitHubActionsJobValidator
+        validator = GitHubActionsJobValidator()
+        stats = validator.get_deletion_stats()
+        print(f'Validator Results: {stats}')
+        "
         
     - name: Run scraper
       env:
