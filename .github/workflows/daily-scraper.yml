@@ -34,6 +34,10 @@ jobs:
         pip install openai
         
     - name: Check environment setup
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         echo "Checking environment variables..."
         if [ -z "$SUPABASE_URL" ]; then
@@ -64,6 +68,7 @@ jobs:
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         echo "Testing GitHub Actions environment for validator..."
         python test_github_actions_validator.py
