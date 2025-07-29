@@ -183,9 +183,9 @@ class JobindexPlaywrightScraper:
                         
                         # Save new jobs to Supabase immediately
                         if self.supabase:
-                            saved_count = self.save_jobs_to_supabase(new_jobs)
-                            total_saved_to_supabase += saved_count
-                            logger.info(f"Saved {saved_count} jobs to Supabase from page {page_num} (total saved: {total_saved_to_supabase})")
+                            new_count, existing_count = self.save_jobs_to_supabase(new_jobs)
+                            total_saved_to_supabase += new_count
+                            logger.info(f"Page {page_num} results: {new_count} new jobs saved, {existing_count} already existed (total new saved: {total_saved_to_supabase})")
                     else:
                         logger.info(f"No new jobs found on page {page_num}, stopping")
                         break
@@ -197,7 +197,7 @@ class JobindexPlaywrightScraper:
                 self.jobs = all_jobs
                 logger.info(f"Total unique jobs scraped: {len(all_jobs)} from {page_num - 1} pages")
                 if self.supabase:
-                    logger.info(f"Total jobs saved to Supabase: {total_saved_to_supabase}")
+                    logger.info(f"Total NEW jobs saved to Supabase: {total_saved_to_supabase}")
                 
             except Exception as e:
                 logger.error(f"Error during scraping: {e}")
@@ -209,35 +209,56 @@ class JobindexPlaywrightScraper:
         return self.jobs
     
     def save_jobs_to_supabase(self, jobs_to_save, table_name='jobs'):
-        """Save a batch of jobs to Supabase database with duplicate handling"""
+        """Save a batch of jobs to Supabase database with duplicate detection and logging"""
         if not self.supabase:
             logger.error("Supabase client not initialized")
-            return 0
+            return 0, 0
         
         if not jobs_to_save:
-            return 0
+            return 0, 0
         
         try:
-            # Prepare data for Supabase (remove scraped_at timestamp as it will be set by database)
-            jobs_data = []
+            # Get existing job IDs to check for duplicates
+            job_ids = [job['job_id'] for job in jobs_to_save]
+            
+            # Check which jobs already exist
+            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).execute()
+            existing_job_ids = {job['job_id'] for job in existing_jobs_result.data}
+            
+            # Separate new and existing jobs
+            new_jobs = []
+            existing_jobs = []
+            
             for job in jobs_to_save:
-                job_data = job.copy()
-                # Remove scraped_at as it will be handled by database
-                job_data.pop('scraped_at', None)
-                jobs_data.append(job_data)
+                if job['job_id'] in existing_job_ids:
+                    existing_jobs.append(job)
+                else:
+                    new_jobs.append(job)
             
-            # Use upsert to handle duplicates (insert if not exists, update if exists)
-            # This will prevent duplicate job_id entries
-            result = self.supabase.table(table_name).upsert(jobs_data, on_conflict='job_id').execute()
+            # Log the breakdown
+            logger.info(f"Batch analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs")
             
-            return len(jobs_to_save)
+            if new_jobs:
+                # Prepare data for Supabase (remove scraped_at timestamp as it will be set by database)
+                jobs_data = []
+                for job in new_jobs:
+                    job_data = job.copy()
+                    # Remove scraped_at as it will be handled by database
+                    job_data.pop('scraped_at', None)
+                    jobs_data.append(job_data)
+                
+                # Insert only new jobs
+                result = self.supabase.table(table_name).insert(jobs_data).execute()
+                logger.info(f"Successfully inserted {len(new_jobs)} new jobs to Supabase")
+            
+            return len(new_jobs), len(existing_jobs)
             
         except Exception as e:
             logger.error(f"Error saving to Supabase: {e}")
-            return 0
+            return 0, 0
     
     def save_to_supabase(self, table_name='jobs'):
-        """Save all scraped jobs to Supabase database with duplicate handling"""
+        """Save all scraped jobs to Supabase database with duplicate detection and logging"""
         if not self.supabase:
             logger.error("Supabase client not initialized")
             return False
@@ -247,19 +268,41 @@ class JobindexPlaywrightScraper:
             return False
         
         try:
-            # Prepare data for Supabase (remove scraped_at timestamp as it will be set by database)
-            jobs_data = []
+            # Get existing job IDs to check for duplicates
+            job_ids = [job['job_id'] for job in self.jobs]
+            
+            # Check which jobs already exist
+            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).execute()
+            existing_job_ids = {job['job_id'] for job in existing_jobs_result.data}
+            
+            # Separate new and existing jobs
+            new_jobs = []
+            existing_jobs = []
+            
             for job in self.jobs:
-                job_data = job.copy()
-                # Remove scraped_at as it will be handled by database
-                job_data.pop('scraped_at', None)
-                jobs_data.append(job_data)
+                if job['job_id'] in existing_job_ids:
+                    existing_jobs.append(job)
+                else:
+                    new_jobs.append(job)
             
-            # Use upsert to handle duplicates (insert if not exists, update if exists)
-            # This will prevent duplicate job_id entries
-            result = self.supabase.table(table_name).upsert(jobs_data, on_conflict='job_id').execute()
+            # Log the breakdown
+            logger.info(f"Total jobs analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs")
             
-            logger.info(f"Successfully saved {len(self.jobs)} jobs to Supabase table '{table_name}' (with duplicate handling)")
+            if new_jobs:
+                # Prepare data for Supabase (remove scraped_at timestamp as it will be set by database)
+                jobs_data = []
+                for job in new_jobs:
+                    job_data = job.copy()
+                    # Remove scraped_at as it will be handled by database
+                    job_data.pop('scraped_at', None)
+                    jobs_data.append(job_data)
+                
+                # Insert only new jobs
+                result = self.supabase.table(table_name).insert(jobs_data).execute()
+                logger.info(f"Successfully inserted {len(new_jobs)} new jobs to Supabase table '{table_name}'")
+            else:
+                logger.info("No new jobs to insert - all jobs already exist in database")
+            
             return True
             
         except Exception as e:
@@ -426,7 +469,23 @@ class JobindexPlaywrightScraper:
             return
         
         print(f"\n=== Jobindex Playwright Scraping Summary ===")
-        print(f"Total jobs: {len(self.jobs)}")
+        print(f"Total jobs scraped: {len(self.jobs)}")
+        
+        # If Supabase is available, show database stats
+        if self.supabase:
+            try:
+                # Get total jobs in database
+                total_in_db = self.supabase.table('jobs').select('*', count='exact').execute()
+                total_count = total_in_db.count if hasattr(total_in_db, 'count') else len(total_in_db.data)
+                print(f"Total jobs in database: {total_count}")
+                
+                # Get active jobs in database
+                active_in_db = self.supabase.table('jobs').select('*', count='exact').is_('deleted_at', 'null').execute()
+                active_count = active_in_db.count if hasattr(active_in_db, 'count') else len(active_in_db.data)
+                print(f"Active jobs in database: {active_count}")
+                
+            except Exception as e:
+                print(f"Could not retrieve database stats: {e}")
         
         # Count by company
         companies = {}
@@ -471,7 +530,7 @@ async def main():
     if jobs:
         # Jobs are already saved to Supabase during scraping
         if scraper.supabase:
-            print("✅ Jobs saved to Supabase during scraping!")
+            print("✅ Jobs processed and new ones saved to Supabase during scraping!")
 
         # Save results locally as backup
         json_file = scraper.save_to_json()

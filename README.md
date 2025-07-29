@@ -5,8 +5,9 @@ A Python scraper that extracts job listings from [Jobindex.dk](https://www.jobin
 ## Features
 
 - **Playwright-based scraping** - Handles JavaScript-rendered content
-- **Supabase integration** - Direct database saving
+- **Supabase integration** - Direct database saving with duplicate detection
 - **Job validation** - Automatic detection and soft deletion of expired jobs
+- **AI-powered job scoring** - CFO Interim Services scoring using OpenAI
 - **Multiple output formats** - JSON, CSV, and database
 - **Clean data structure** - Essential job information only
 - **Rate limiting** - Respectful scraping with delays
@@ -65,7 +66,11 @@ CREATE INDEX idx_jobs_deleted_at ON jobs(deleted_at);
 ### 4. Run the Scraper
 
 ```bash
+# Run the full scraper
 python playwright_scraper.py
+
+# Test duplicate detection with limited pages
+python test_scraper_duplicates.py
 ```
 
 ### 5. Validate and Clean Expired Jobs (Optional)
@@ -83,6 +88,25 @@ python restore_jobs.py
 # Check specific job validity
 python restore_jobs.py h1583150
 ```
+
+### 6. Score Jobs for CFO Interim Services (Optional)
+
+```bash
+# First, add scoring columns to database
+# Run the SQL in add_scoring_columns.sql in your Supabase SQL editor
+
+# Test scoring with a small sample
+python test_job_scorer.py
+
+# Score all active unscored jobs
+python job_scorer.py
+```
+
+**Scoring System:**
+- **3** = Akut/midlertidigt og økonomirelateret → KPMG bør tage kontakt straks
+- **2** = Økonomistilling hvor behovet kunne være der
+- **1** = Lav sandsynlighed, men økonomirelateret
+- **0** = Ikke økonomirelateret
 
 ## Usage
 
@@ -195,6 +219,7 @@ python test_job_validator.py
 - `SUPABASE_URL` - Your Supabase project URL
 - `SUPABASE_ANON_KEY` - Your Supabase anon/public key
 - `SUPABASE_TABLE_NAME` - Custom table name (default: 'jobs')
+- `OPENAI_API_KEY` - Your OpenAI API key (required for job scoring)
 
 ### Scraper Options
 
@@ -255,6 +280,11 @@ Results saved to:
 3. **Playwright errors**
    - Run `playwright install chromium`
    - Check browser installation
+
+4. **Job scoring errors**
+   - Ensure `OPENAI_API_KEY` is set in environment
+   - Check if scoring columns exist in database
+   - Run `python test_job_scorer.py` to test
 
 ### Debug Mode
 
