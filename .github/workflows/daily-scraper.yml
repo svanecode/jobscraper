@@ -73,8 +73,8 @@ jobs:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
-        echo "Starting GitHub Actions optimized job validation..."
-        python job_validator_github_actions.py
+        echo "Starting GitHub Actions V2 job validation with fallback strategies..."
+        python job_validator_github_actions_v2.py
         echo "Job validation completed successfully"
         
     - name: Check validator results
@@ -84,8 +84,8 @@ jobs:
       run: |
         echo "Checking validator results..."
         python -c "
-        from job_validator_github_actions import GitHubActionsJobValidator
-        validator = GitHubActionsJobValidator()
+        from job_validator_github_actions_v2 import GitHubActionsJobValidatorV2
+        validator = GitHubActionsJobValidatorV2()
         stats = validator.get_deletion_stats()
         print(f'Validator Results: {stats}')
         "
