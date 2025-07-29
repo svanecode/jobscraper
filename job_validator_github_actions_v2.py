@@ -67,9 +67,10 @@ class GitHubActionsJobValidatorV2:
             # If max_jobs is specified and less than total, use it
             if max_jobs and max_jobs < total_active:
                 limit = max_jobs
-                logger.info(f"🔧 Limiting to {limit} jobs for GitHub Actions testing")
+                logger.info(f"🔧 Limiting to {limit} jobs for testing")
             else:
                 limit = total_active
+                logger.info(f"🔧 Processing ALL {limit} active jobs in database")
             
             # Fetch jobs in chunks to handle large datasets
             all_jobs = []
@@ -476,7 +477,7 @@ async def main():
         # Run validation with CI-optimized settings
         await validator.validate_jobs(
             batch_size=3,  # Even smaller batch size for CI
-            max_jobs=50    # Limit for testing in CI
+            max_jobs=None  # Check ALL jobs in database
         )
         
         # Get and display statistics
