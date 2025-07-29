@@ -46,19 +46,84 @@ class JobindexPlaywrightScraper:
     async def scrape_jobs(self):
         """Scrape job listings using Playwright with pagination and duplicate detection"""
         async with async_playwright() as p:
-            # Launch browser
-            browser = await p.chromium.launch(headless=True)
+            # Launch browser with better settings
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor'
+                ]
+            )
             context = await browser.new_context(
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080}
             )
             page = await context.new_page()
             
             try:
                 logger.info(f"Navigating to: {self.search_url}")
-                await page.goto(self.search_url, wait_until='networkidle')
                 
-                # Wait for job listings to load
-                await page.wait_for_selector('[id^="jobad-wrapper-"]', timeout=10000)
+                # Try multiple navigation strategies
+                navigation_success = False
+                
+                # Strategy 1: Try with domcontentloaded (faster)
+                try:
+                    logger.info("Attempting navigation with domcontentloaded...")
+                    await page.goto(self.search_url, wait_until='domcontentloaded', timeout=15000)
+                    await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                    navigation_success = True
+                    logger.info("Navigation successful with domcontentloaded")
+                except Exception as e:
+                    logger.warning(f"domcontentloaded navigation failed: {e}")
+                
+                # Strategy 2: Try with load (fallback)
+                if not navigation_success:
+                    try:
+                        logger.info("Attempting navigation with load...")
+                        await page.goto(self.search_url, wait_until='load', timeout=20000)
+                        await page.wait_for_load_state('load', timeout=5000)
+                        navigation_success = True
+                        logger.info("Navigation successful with load")
+                    except Exception as e:
+                        logger.warning(f"load navigation failed: {e}")
+                
+                # Strategy 3: Try without wait_until (last resort)
+                if not navigation_success:
+                    try:
+                        logger.info("Attempting navigation without wait_until...")
+                        await page.goto(self.search_url, timeout=25000)
+                        await asyncio.sleep(3)  # Wait a bit for page to load
+                        navigation_success = True
+                        logger.info("Navigation successful without wait_until")
+                    except Exception as e:
+                        logger.error(f"All navigation strategies failed: {e}")
+                        return []
+                
+                # Wait for job listings to load with multiple selectors
+                job_selectors = [
+                    '[id^="jobad-wrapper-"]',
+                    '.job-listing',
+                    '.job-item',
+                    '[data-testid="job-listing"]'
+                ]
+                
+                job_found = False
+                for selector in job_selectors:
+                    try:
+                        logger.info(f"Waiting for job listings with selector: {selector}")
+                        await page.wait_for_selector(selector, timeout=10000)
+                        job_found = True
+                        logger.info(f"Job listings found with selector: {selector}")
+                        break
+                    except Exception as e:
+                        logger.debug(f"Selector {selector} not found: {e}")
+                        continue
+                
+                if not job_found:
+                    logger.warning("No job listings found with any selector, but continuing...")
                 
                 all_jobs = []
                 seen_job_ids = set()  # Track seen job IDs to avoid duplicates
@@ -73,8 +138,25 @@ class JobindexPlaywrightScraper:
                         try:
                             next_url = f"{self.search_url}?page={page_num}"
                             logger.info(f"Navigating to: {next_url}")
-                            await page.goto(next_url, wait_until='networkidle')
-                            await page.wait_for_selector('[id^="jobad-wrapper-"]', timeout=10000)
+                            
+                            # Use the same navigation strategy as initial page
+                            await page.goto(next_url, wait_until='domcontentloaded', timeout=15000)
+                            await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                            
+                            # Wait for job listings again
+                            job_found = False
+                            for selector in job_selectors:
+                                try:
+                                    await page.wait_for_selector(selector, timeout=10000)
+                                    job_found = True
+                                    break
+                                except Exception:
+                                    continue
+                            
+                            if not job_found:
+                                logger.warning(f"No job listings found on page {page_num}, stopping")
+                                break
+                                
                         except Exception as e:
                             logger.warning(f"Could not navigate to page {page_num}: {e}")
                             break
@@ -119,6 +201,8 @@ class JobindexPlaywrightScraper:
                 
             except Exception as e:
                 logger.error(f"Error during scraping: {e}")
+                # Return any jobs we managed to scrape before the error
+                return self.jobs
             finally:
                 await browser.close()
         
@@ -187,13 +271,48 @@ class JobindexPlaywrightScraper:
         jobs = []
         
         try:
-            # Find all job wrapper elements
-            job_wrappers = await page.query_selector_all('[id^="jobad-wrapper-"]')
+            # Try multiple selectors to find job listings
+            job_selectors = [
+                '[id^="jobad-wrapper-"]',
+                '.job-listing',
+                '.job-item',
+                '[data-testid="job-listing"]',
+                '.job-card',
+                '.job-ad'
+            ]
             
-            for wrapper in job_wrappers:
-                job = await self.parse_job_listing(wrapper)
-                if job:
-                    jobs.append(job)
+            job_wrappers = []
+            for selector in job_selectors:
+                try:
+                    logger.debug(f"Trying selector: {selector}")
+                    wrappers = await page.query_selector_all(selector)
+                    if wrappers:
+                        job_wrappers = wrappers
+                        logger.info(f"Found {len(wrappers)} job listings with selector: {selector}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Selector {selector} failed: {e}")
+                    continue
+            
+            if not job_wrappers:
+                logger.warning("No job wrappers found with any selector")
+                return jobs
+            
+            logger.info(f"Processing {len(job_wrappers)} job listings")
+            
+            for i, wrapper in enumerate(job_wrappers):
+                try:
+                    job = await self.parse_job_listing(wrapper)
+                    if job:
+                        jobs.append(job)
+                        logger.debug(f"Successfully parsed job {i+1}/{len(job_wrappers)}: {job.get('title', 'Unknown')}")
+                    else:
+                        logger.debug(f"Failed to parse job {i+1}/{len(job_wrappers)}")
+                except Exception as e:
+                    logger.warning(f"Error parsing job {i+1}/{len(job_wrappers)}: {e}")
+                    continue
+            
+            logger.info(f"Successfully extracted {len(jobs)} jobs from page")
             
         except Exception as e:
             logger.error(f"Error extracting jobs from page: {e}")

@@ -168,10 +168,13 @@ class JobValidator:
         Returns:
             bool: True if job is still valid, False if expired/not found
         """
-        job_url = job.get('job_url')
-        if not job_url:
-            logger.warning(f"No URL for job {job['job_id']}")
-            return True  # Keep jobs without URLs to be safe
+        job_id = job.get('job_id')
+        if not job_id:
+            logger.warning(f"No job_id for job")
+            return True  # Keep jobs without job_id to be safe
+        
+        # Construct the Jobindex URL directly from job_id
+        job_url = f"https://www.jobindex.dk/vis-job/{job_id}"
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -192,19 +195,19 @@ class JobValidator:
                 
                 # ONLY check for "Annoncen er udløbet!" - nothing else
                 if "Annoncen er udløbet!" in page_text:
-                    logger.debug(f"Job {job['job_id']} is expired (found: Annoncen er udløbet!)")
+                    logger.debug(f"Job {job_id} is expired (found: Annoncen er udløbet!)")
                     await browser.close()
                     return False
                 
                 # If we reach here, the job is valid (we only check for "Annoncen er udløbet!")
-                logger.debug(f"Job {job['job_id']} - no 'Annoncen er udløbet!' found, keeping job")
+                logger.debug(f"Job {job_id} - no 'Annoncen er udløbet!' found, keeping job")
                 await browser.close()
                 return True
                 
             except Exception as e:
                 # For ANY error, keep the job to be safe
-                logger.debug(f"Error checking job {job['job_id']}: {e}")
-                logger.debug(f"Job {job['job_id']} - error occurred, keeping job to be safe")
+                logger.debug(f"Error checking job {job_id}: {e}")
+                logger.debug(f"Job {job_id} - error occurred, keeping job to be safe")
                 await browser.close()
                 return True
     
