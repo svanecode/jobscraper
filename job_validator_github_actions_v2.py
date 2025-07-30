@@ -36,6 +36,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class GitHubActionsJobValidatorV2:
+    """
+    GitHub Actions Job Validator V2 with Job Scoring Integration
+    
+    This enhanced version:
+    - Limits processing to 100 jobs per run
+    - Prioritizes newest unscored jobs by publication date
+    - Validates job validity (checks for expired jobs)
+    - Scores jobs using AI analysis
+    - Optimized for CI/CD environments
+    """
     def __init__(self, supabase_url=None, supabase_key=None):
         self.base_url = "https://www.jobindex.dk"
         
@@ -51,8 +61,8 @@ class GitHubActionsJobValidatorV2:
             logger.error("❌ Supabase credentials not provided")
             raise ValueError("Supabase credentials required")
     
-    def get_active_jobs(self, max_jobs=None):
-        """Get all active (non-deleted) jobs from the database"""
+    def get_active_jobs(self, max_jobs=100):
+        """Get active (non-deleted) jobs from the database, prioritizing newest unscored jobs"""
         try:
             # First, get the total count of active jobs
             count_result = self.supabase.table('jobs').select('*', count='exact').is_('deleted_at', 'null').execute()
@@ -64,32 +74,35 @@ class GitHubActionsJobValidatorV2:
                 logger.warning("⚠️ No active jobs found in database")
                 return []
             
-            # If max_jobs is specified and less than total, use it
-            if max_jobs and max_jobs < total_active:
-                limit = max_jobs
-                logger.info(f"🔧 Limiting to {limit} jobs for testing")
-            else:
-                limit = total_active
-                logger.info(f"🔧 Processing ALL {limit} active jobs in database")
+            # Get unscored jobs first, ordered by publication date (newest first)
+            logger.info("🔍 Fetching unscored jobs first, ordered by publication date (newest first)")
             
-            # Fetch jobs in chunks to handle large datasets
-            all_jobs = []
-            chunk_size = 1000  # Supabase default limit
+            # Query for unscored jobs, ordered by publication date descending
+            unscored_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').is_('cfo_score', 'null').order('publication_date', desc=True).limit(max_jobs)
+            unscored_result = unscored_query.execute()
             
-            for offset in range(0, limit, chunk_size):
-                current_chunk_size = min(chunk_size, limit - offset)
-                
-                query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date', desc=False).range(offset, offset + current_chunk_size - 1)
-                result = query.execute()
-                
-                if result.data:
-                    all_jobs.extend(result.data)
-                    logger.info(f"📥 Retrieved chunk {offset//chunk_size + 1}: {len(result.data)} jobs (total: {len(all_jobs)})")
-                else:
-                    logger.warning(f"⚠️ No data returned for chunk starting at offset {offset}")
-                    break
+            unscored_jobs = unscored_result.data or []
+            logger.info(f"📥 Found {len(unscored_jobs)} unscored jobs")
             
-            logger.info(f"✅ Retrieved {len(all_jobs)} active jobs from database")
+            # If we have enough unscored jobs, return them
+            if len(unscored_jobs) >= max_jobs:
+                logger.info(f"✅ Returning {len(unscored_jobs)} unscored jobs (limited to {max_jobs})")
+                return unscored_jobs[:max_jobs]
+            
+            # If we need more jobs, get some scored jobs too (newest first)
+            remaining_slots = max_jobs - len(unscored_jobs)
+            logger.info(f"🔍 Need {remaining_slots} more jobs, fetching scored jobs (newest first)")
+            
+            scored_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').not_.is_('cfo_score', 'null').order('publication_date', desc=True).limit(remaining_slots)
+            scored_result = scored_query.execute()
+            
+            scored_jobs = scored_result.data or []
+            logger.info(f"📥 Found {len(scored_jobs)} scored jobs")
+            
+            # Combine unscored and scored jobs
+            all_jobs = unscored_jobs + scored_jobs
+            logger.info(f"✅ Retrieved {len(all_jobs)} total jobs (unscored: {len(unscored_jobs)}, scored: {len(scored_jobs)})")
+            
             return all_jobs
                 
         except Exception as e:
@@ -375,15 +388,15 @@ class GitHubActionsJobValidatorV2:
             logger.error(f"❌ Error soft deleting job {job_id}: {e}")
             return False
     
-    async def validate_jobs(self, batch_size=3, max_jobs=None):
+    async def validate_jobs(self, batch_size=3, max_jobs=100):
         """
-        Validate all jobs in the database and soft delete expired ones
+        Validate jobs in the database and soft delete expired ones
         
         Args:
             batch_size: Number of jobs to process in parallel (smaller for CI)
-            max_jobs: Maximum number of jobs to check (for testing)
+            max_jobs: Maximum number of jobs to check (default: 100)
         """
-        # Get all active jobs from database
+        # Get active jobs from database (prioritizing newest unscored)
         jobs = self.get_active_jobs(max_jobs)
         
         if not jobs:
@@ -466,26 +479,60 @@ class GitHubActionsJobValidatorV2:
             return {"total_jobs": 0, "active_jobs": 0, "deleted_jobs": 0}
 
 async def main():
-    """Main function to run the GitHub Actions validator V2"""
+    """Main function to run the GitHub Actions validator V2 with job scoring"""
     try:
-        logger.info("🚀 Starting GitHub Actions Job Validator V2")
-        logger.info("=" * 50)
+        logger.info("🚀 Starting GitHub Actions Job Validator V2 with Scoring")
+        logger.info("=" * 60)
         
         # Initialize the validator
         validator = GitHubActionsJobValidatorV2()
         
-        # Run validation with CI-optimized settings
+        # Run validation with CI-optimized settings (limited to 100 jobs)
+        logger.info("🔍 STEP 1: Validating job validity (checking for expired jobs)")
         await validator.validate_jobs(
-            batch_size=3,  # Even smaller batch size for CI
-            max_jobs=None  # Check ALL jobs in database
+            batch_size=3,  # Small batch size for CI
+            max_jobs=100   # Limited to 100 jobs per run
         )
         
-        # Get and display statistics
+        # Get and display validation statistics
         stats = validator.get_deletion_stats()
-        logger.info("📊 FINAL STATISTICS:")
+        logger.info("📊 VALIDATION STATISTICS:")
         logger.info(f"  Total jobs: {stats['total_jobs']}")
         logger.info(f"  Active jobs: {stats['active_jobs']}")
         logger.info(f"  Deleted jobs: {stats['deleted_jobs']}")
+        
+        # STEP 2: Score jobs using the JobScorer
+        logger.info("\n🎯 STEP 2: Scoring jobs using AI analysis")
+        try:
+            from job_scorer import JobScorer
+            
+            # Initialize the job scorer
+            scorer = JobScorer()
+            
+            # Score jobs (limited to 100, prioritizing newest unscored)
+            await scorer.score_all_jobs(
+                batch_size=5,      # Conservative batch size for API rate limits
+                max_jobs=100,      # Limited to 100 jobs per run
+                delay=2.0,         # 2 second delay between batches
+                only_unscored=True # Only score jobs that haven't been scored yet
+            )
+            
+            # Get scoring statistics
+            scoring_stats = scorer.get_scoring_stats()
+            logger.info("📊 SCORING STATISTICS:")
+            logger.info(f"  Total jobs scored: {scoring_stats['total_scored']}")
+            logger.info(f"  Average score: {scoring_stats['average_score']:.2f}")
+            logger.info("  Score distribution:")
+            for score, count in scoring_stats['distribution'].items():
+                percentage = (count / scoring_stats['total_scored']) * 100 if scoring_stats['total_scored'] > 0 else 0
+                logger.info(f"    Score {score}: {count} jobs ({percentage:.1f}%)")
+            
+        except ImportError:
+            logger.warning("⚠️ JobScorer not available, skipping job scoring step")
+        except Exception as e:
+            logger.error(f"❌ Error during job scoring: {e}")
+        
+        logger.info("\n🎉 GitHub Actions Job Validator V2 with Scoring completed successfully!")
         
     except Exception as e:
         logger.error(f"❌ Error in main: {e}")

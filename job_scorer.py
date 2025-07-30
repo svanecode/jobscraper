@@ -139,7 +139,7 @@ class JobScorer:
 
 🔹 Du må **aldrig tildele point til jobopslag fra konsulenthuse** (fx Deloitte, EY, PwC, BDO, Capgemini osv.) – de scorer altid **0**, da vi ikke konkurrerer med dem.
 
-🔹 Økonomirelaterede stillinger dækker: CFO, regnskabschef, controller, bogholder, business partner, økonomichef, rapportering, budgettering, finansiel analyse, SAP/ERP relaterede økonomiroller.
+🔹 Økonomirelaterede stillinger dækker fx: CFO, regnskabschef, controller, bogholder, business partner, økonomichef, rapportering, budgettering, finansiel analyse, **lønbehandling**, lønbogholder, lønassistent og SAP/ERP relaterede økonomiroller.
 
 🔹 Du skal returnere **kun én score**:  
 - `3` = Akut/midlertidigt og økonomirelateret → KPMG bør tage kontakt straks  
@@ -157,6 +157,26 @@ class JobScorer:
 - "Studiejob i økonomiafdelingen" → 1  
 - "HR-assistent med personaleansvar" → 0  
 - "Managementkonsulent hos Deloitte" → 0
+- “HR- og lønassistent – barselsvikariat” → 3  
+- “Lønbogholder til regnskabsafdeling” → 2  
+- “Studentermedhjælper med opgaver i løn og administration” → 1  
+- “HR-konsulent med fokus på personaleudvikling” → 0  
+
+---
+
+🔹 Sådan skelner du mellem score 1 og 2:
+
+- Vælg **score 2**, hvis jobtitlen eller beskrivelsen indeholder klare økonomiroller som: “regnskabsmedarbejder”, “controller”, “bogholder”, “økonomichef”, “finance business partner” osv.
+
+- Vælg **score 1**, hvis det kun nævnes perifert, fx “assistent i økonomiafdelingen”, “hjælper med budgetter” eller “økonomiforståelse ønskes”.
+
+→ Det er vigtigt, at du ikke er for forsigtig: **Hvis jobtitlen i sig selv er en økonomistilling, så giv mindst score 2**.
+
+---
+
+- **Score 3**, hvis der er tale om et **midlertidigt lønjob**, fx barselsvikariat, sygefravær eller “hurtig tiltrædelse” i en lønfunktion
+- **Score 2**, hvis det er en **permanent lønrelateret rolle** i økonomiafdelingen
+- **Score 1**, hvis det kun nævnes perifert (“hjælper med løn”, “forståelse for løn ønskes”)
 
 ---
 
@@ -180,16 +200,60 @@ Beskrivelse: {job.get('description', 'N/A')}"""
             Score (0-3) or None if error
         """
         try:
-            prompt = self.create_scoring_prompt(job)
+            # Create system message with rules and examples
+            system_message = """Du er en dansk sprogmodel og ekspert i interim CFO-services. Din opgave er at gennemlæse danske jobopslag og vurdere sandsynligheden for, at virksomheden har brug for midlertidig CFO- eller økonomiassistance.
+
+🔹 Du analyserer:
+- Jobtitel
+- Jobbeskrivelse
+- Virksomhedsnavn og branche
+- Eventuel angivelse af vikariat, barsel, sygdom, opsigelse, akut behov mv.
+
+🔹 Du skal vurdere både relevans og **tidsmæssig karakter** (midlertidigt/akut vs. fast stilling).
+
+🔹 Du må **aldrig tildele point til jobopslag fra konsulenthuse** (fx Deloitte, EY, PwC, BDO, Capgemini osv.) – de scorer altid **0**, da vi ikke konkurrerer med dem.
+
+🔹 Økonomirelaterede stillinger dækker: CFO, regnskabschef, controller, bogholder, business partner, økonomichef, rapportering, budgettering, finansiel analyse, SAP/ERP relaterede økonomiroller.
+
+🔹 Du skal returnere **kun én score**:  
+- `3` = Akut/midlertidigt og økonomirelateret → KPMG bør tage kontakt straks  
+- `2` = Økonomistilling hvor behovet kunne være der  
+- `1` = Lav sandsynlighed, men økonomirelateret  
+- `0` = Ikke økonomirelateret eller konsulenthus  
+
+🔹 Sådan skelner du mellem score 1 og 2:
+
+- Vælg **score 2**, hvis jobtitlen eller beskrivelsen indeholder klare økonomiroller som: "regnskabsmedarbejder", "controller", "bogholder", "økonomichef", "finance business partner" osv.
+
+- Vælg **score 1**, hvis det kun nævnes perifert, fx "assistent i økonomiafdelingen", "hjælper med budgetter" eller "økonomiforståelse ønskes".
+
+→ Det er vigtigt, at du ikke er for forsigtig: **Hvis jobtitlen i sig selv er en økonomistilling, så giv mindst score 2**.
+
+🔸 Eksempler:
+- "Interim regnskabschef i barselsvikariat" → 3  
+- "Finance Business Partner" → 2  
+- "Studiejob i økonomiafdelingen" → 1  
+- "HR-assistent med personaleansvar" → 0  
+- "Managementkonsulent hos Deloitte" → 0
+
+**Returnér kun et tal (0, 1, 2 eller 3). Ingen anden tekst.**"""
+
+            # Create user message with the specific job
+            user_message = f"""Læs og vurder følgende jobopslag:
+
+Titel: {job.get('title', 'N/A')}
+Firma: {job.get('company', 'N/A')}
+Lokation: {job.get('location', 'N/A')}
+Beskrivelse: {job.get('description', 'N/A')}"""
             
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o",  # Using GPT-4o for better accuracy
                 messages=[
-                    {"role": "system", "content": "Du er en ekspert i at vurdere jobopslag for CFO Interim Services. Svar kun med et tal mellem 0-3."},
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": user_message}
                 ],
-                max_tokens=10,
-                temperature=0.1  # Low temperature for consistent scoring
+                max_tokens=5,  # Reduced since we only need a single digit
+                temperature=0  # Set to 0 for maximum consistency
             )
             
             # Extract the score from the response
