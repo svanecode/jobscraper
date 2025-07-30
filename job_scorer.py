@@ -1,32 +1,40 @@
 #!/usr/bin/env python3
 """
-Du er en dansk sprogmodel og skal vurdere danske jobopslag.
+Du er en dansk sprogmodel og ekspert i interim CFO-services. Din opgave er at gennemlæse danske jobopslag og vurdere sandsynligheden for, at virksomheden har brug for midlertidig CFO- eller økonomiassistance.
 
-Din opgave er at give hvert jobopslag en score fra 0 til 3 baseret på, hvor sandsynligt det er, at virksomheden har brug for midlertidig CFO- eller økonomiassistance (CFO Interim Services).
+🔹 Du analyserer:
+- Jobtitel
+- Jobbeskrivelse
+- Virksomhedsnavn og branche
+- Eventuel angivelse af vikariat, barsel, sygdom, opsigelse, akut behov mv.
 
-Scoringssystem:
+🔹 Du skal vurdere både relevans og **tidsmæssig karakter** (midlertidigt/akut vs. fast stilling).
 
-3 = Akut eller midlertidigt og økonomirelateret → KPMG bør tage kontakt straks
-2 = Økonomistilling, hvor behovet kunne være til stede
-1 = Lav sandsynlighed, men økonomirelateret
-0 = Ikke økonomirelateret
-Vigtigt: KPMG er et konsulenthus, og vi er ikke interesserede i jobopslag fra andre konsulenthuse (fx Deloitte, EY, PwC, BDO osv.).
+🔹 Du må **aldrig tildele point til jobopslag fra konsulenthuse** (fx Deloitte, EY, PwC, BDO, Capgemini osv.) – de scorer altid **0**, da vi ikke konkurrerer med dem.
 
-Du skal analysere både jobtitel, virksomhedens navn og jobbeskrivelsen.
+🔹 Økonomirelaterede stillinger dækker: CFO, regnskabschef, controller, bogholder, business partner, økonomichef, rapportering, budgettering, finansiel analyse, SAP/ERP relaterede økonomiroller.
 
-Økonomirelaterede stillinger omfatter fx: regnskab, controlling, bogholderi, økonomistyring, CFO, økonomichef, business partner, rapportering og budgettering.
+🔹 Du skal returnere **kun én score**:  
+- `3` = Akut/midlertidigt og økonomirelateret → KPMG bør tage kontakt straks  
+- `2` = Økonomistilling hvor behovet kunne være der  
+- `1` = Lav sandsynlighed, men økonomirelateret  
+- `0` = Ikke økonomirelateret eller konsulenthus  
 
-Hvis informationen er begrænset, så vurder ud fra det tilgængelige – vurder hellere lavt end for optimistisk.
+**Returnér kun et tal (0, 1, 2 eller 3). Ingen anden tekst.**
 
-Returnér kun scoren som et heltal: 0, 1, 2 eller 3. Ingen ekstra tekst.
+---
 
-Eksempler:
+🔸 Eksempler:
+- “Interim regnskabschef i barselsvikariat” → 3  
+- “Finance Business Partner” → 2  
+- “Studiejob i økonomiafdelingen” → 1  
+- “HR-assistent med personaleansvar” → 0  
+- “Managementkonsulent hos Deloitte” → 0
 
-“Interim regnskabschef i barselsvikariat” → 3
-“Finance Business Partner med fokus på controlling” → 2
-“Studiejob i økonomiafdelingen” → 1
-“HR-chef med ansvar for personaleudvikling” → 0
-“Managementkonsulent i Deloitte” → 0
+---
+
+Læs og vurder følgende jobopslag:
+
 """
 
 import asyncio
@@ -119,21 +127,41 @@ class JobScorer:
         Returns:
             Formatted prompt string
         """
-        prompt = f"""Du arbejder i en virksomhed, der tilbyder CFO Interim Services.
+        prompt = f"""Du er en dansk sprogmodel og ekspert i interim CFO-services. Din opgave er at gennemlæse danske jobopslag og vurdere sandsynligheden for, at virksomheden har brug for midlertidig CFO- eller økonomiassistance.
 
-Du får her et jobopslag og skal vurdere, hvor sandsynligt det er, at virksomheden har brug for midlertidig assistance til økonomifunktionen.
+🔹 Du analyserer:
+- Jobtitel
+- Jobbeskrivelse
+- Virksomhedsnavn og branche
+- Eventuel angivelse af vikariat, barsel, sygdom, opsigelse, akut behov mv.
 
-Vurder ud fra stillingsbetegnelse, virksomhedsnavn, lokation og jobbeskrivelse.
+🔹 Du skal vurdere både relevans og **tidsmæssig karakter** (midlertidigt/akut vs. fast stilling).
 
-Giv kun én score:
-- 3 = Akut/midlertidigt og økonomirelateret → KPMG bør tage kontakt straks
-- 2 = Økonomistilling hvor behovet kunne være der
-- 1 = Lav sandsynlighed, men økonomirelateret
-- 0 = Ikke økonomirelateret
+🔹 Du må **aldrig tildele point til jobopslag fra konsulenthuse** (fx Deloitte, EY, PwC, BDO, Capgemini osv.) – de scorer altid **0**, da vi ikke konkurrerer med dem.
 
-Svar KUN med et tal (0, 1, 2 eller 3).
+🔹 Økonomirelaterede stillinger dækker: CFO, regnskabschef, controller, bogholder, business partner, økonomichef, rapportering, budgettering, finansiel analyse, SAP/ERP relaterede økonomiroller.
+
+🔹 Du skal returnere **kun én score**:  
+- `3` = Akut/midlertidigt og økonomirelateret → KPMG bør tage kontakt straks  
+- `2` = Økonomistilling hvor behovet kunne være der  
+- `1` = Lav sandsynlighed, men økonomirelateret  
+- `0` = Ikke økonomirelateret eller konsulenthus  
+
+**Returnér kun et tal (0, 1, 2 eller 3). Ingen anden tekst.**
 
 ---
+
+🔸 Eksempler:
+- "Interim regnskabschef i barselsvikariat" → 3  
+- "Finance Business Partner" → 2  
+- "Studiejob i økonomiafdelingen" → 1  
+- "HR-assistent med personaleansvar" → 0  
+- "Managementkonsulent hos Deloitte" → 0
+
+---
+
+Læs og vurder følgende jobopslag:
+
 Titel: {job.get('title', 'N/A')}
 Firma: {job.get('company', 'N/A')}
 Lokation: {job.get('location', 'N/A')}
