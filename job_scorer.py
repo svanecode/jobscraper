@@ -183,7 +183,7 @@ Beskrivelse: {job.get('description', 'N/A')}"""
             prompt = self.create_scoring_prompt(job)
             
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # Using GPT-4o-mini for cost efficiency
+                model="gpt-4o",  # Using GPT-4o for better accuracy
                 messages=[
                     {"role": "system", "content": "Du er en ekspert i at vurdere jobopslag for CFO Interim Services. Svar kun med et tal mellem 0-3."},
                     {"role": "user", "content": prompt}
