@@ -70,8 +70,8 @@ jobs:
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
-        echo "Testing GitHub Actions environment for validator..."
-        python test_github_actions_validator.py
+        echo "Testing GitHub Actions environment for scorer..."
+        python test_github_actions_scorer.py
         
     - name: Run job validator (oldest jobs first)
       env:
