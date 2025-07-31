@@ -76,7 +76,7 @@ class GitHubActionsJobValidatorV2:
             logger.info("🔍 Fetching ALL jobs for validation, ordered by publication date (oldest first)")
             
             # Query for ALL active jobs, ordered by publication date ascending (oldest first)
-            jobs_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date', asc=True)
+            jobs_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date')
             jobs_result = jobs_query.execute()
             
             jobs = jobs_result.data or []
