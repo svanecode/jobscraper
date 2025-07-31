@@ -40,8 +40,7 @@ class GitHubActionsJobValidatorV2:
     GitHub Actions Job Validator V2
     
     This enhanced version:
-    - Limits processing to 100 jobs per run
-    - Validates job validity (checks for expired jobs)
+    - Validates ALL jobs for expiration (no limit)
     - Orders jobs by publication date (oldest first) to check expired jobs first
     - Optimized for CI/CD environments
     """
@@ -60,8 +59,8 @@ class GitHubActionsJobValidatorV2:
             logger.error("❌ Supabase credentials not provided")
             raise ValueError("Supabase credentials required")
     
-    def get_active_jobs(self, max_jobs=100):
-        """Get active (non-deleted) jobs from the database for validation"""
+    def get_active_jobs(self):
+        """Get ALL active (non-deleted) jobs from the database for validation"""
         try:
             # First, get the total count of active jobs
             count_result = self.supabase.table('jobs').select('*', count='exact').is_('deleted_at', 'null').execute()
@@ -73,15 +72,15 @@ class GitHubActionsJobValidatorV2:
                 logger.warning("⚠️ No active jobs found in database")
                 return []
             
-            # Get jobs for validation, ordered by publication date (oldest first to check expired jobs first)
-            logger.info("🔍 Fetching jobs for validation, ordered by publication date (oldest first)")
+            # Get ALL jobs for validation, ordered by publication date (oldest first to check expired jobs first)
+            logger.info("🔍 Fetching ALL jobs for validation, ordered by publication date (oldest first)")
             
-            # Query for active jobs, ordered by publication date ascending (oldest first)
-            jobs_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date', asc=True).limit(max_jobs)
+            # Query for ALL active jobs, ordered by publication date ascending (oldest first)
+            jobs_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date', asc=True)
             jobs_result = jobs_query.execute()
             
             jobs = jobs_result.data or []
-            logger.info(f"📥 Found {len(jobs)} jobs for validation (limited to {max_jobs})")
+            logger.info(f"📥 Found {len(jobs)} jobs for validation (checking ALL jobs)")
             
             return jobs
                 
@@ -368,16 +367,15 @@ class GitHubActionsJobValidatorV2:
             logger.error(f"❌ Error soft deleting job {job_id}: {e}")
             return False
     
-    async def validate_jobs(self, batch_size=3, max_jobs=100):
+    async def validate_jobs(self, batch_size=3):
         """
         Validate jobs in the database and soft delete expired ones
         
         Args:
             batch_size: Number of jobs to process in parallel (smaller for CI)
-            max_jobs: Maximum number of jobs to check (default: 100)
         """
-        # Get active jobs from database (prioritizing newest unscored)
-        jobs = self.get_active_jobs(max_jobs)
+        # Get ALL active jobs from database
+        jobs = self.get_active_jobs()
         
         if not jobs:
             logger.info("ℹ️ No active jobs found in database")
@@ -467,11 +465,10 @@ async def main():
         # Initialize the validator
         validator = GitHubActionsJobValidatorV2()
         
-        # Run validation with CI-optimized settings (limited to 100 jobs)
-        logger.info("🔍 STEP 1: Validating job validity (checking for expired jobs)")
+        # Run validation with CI-optimized settings (checking ALL jobs)
+        logger.info("🔍 Validating job validity (checking for expired jobs)")
         await validator.validate_jobs(
-            batch_size=3,  # Small batch size for CI
-            max_jobs=100   # Limited to 100 jobs per run
+            batch_size=3  # Small batch size for CI
         )
         
         # Get and display validation statistics
@@ -481,38 +478,7 @@ async def main():
         logger.info(f"  Active jobs: {stats['active_jobs']}")
         logger.info(f"  Deleted jobs: {stats['deleted_jobs']}")
         
-        # STEP 2: Score jobs using the JobScorer
-        logger.info("\n🎯 STEP 2: Scoring jobs using AI analysis")
-        try:
-            from job_scorer import JobScorer
-            
-            # Initialize the job scorer
-            scorer = JobScorer()
-            
-            # Score jobs (limited to 100, prioritizing newest unscored)
-            await scorer.score_all_jobs(
-                batch_size=5,      # Conservative batch size for API rate limits
-                max_jobs=100,      # Limited to 100 jobs per run
-                delay=2.0,         # 2 second delay between batches
-                only_unscored=True # Only score jobs that haven't been scored yet
-            )
-            
-            # Get scoring statistics
-            scoring_stats = scorer.get_scoring_stats()
-            logger.info("📊 SCORING STATISTICS:")
-            logger.info(f"  Total jobs scored: {scoring_stats['total_scored']}")
-            logger.info(f"  Average score: {scoring_stats['average_score']:.2f}")
-            logger.info("  Score distribution:")
-            for score, count in scoring_stats['distribution'].items():
-                percentage = (count / scoring_stats['total_scored']) * 100 if scoring_stats['total_scored'] > 0 else 0
-                logger.info(f"    Score {score}: {count} jobs ({percentage:.1f}%)")
-            
-        except ImportError:
-            logger.warning("⚠️ JobScorer not available, skipping job scoring step")
-        except Exception as e:
-            logger.error(f"❌ Error during job scoring: {e}")
-        
-        logger.info("\n🎉 GitHub Actions Job Validator V2 with Scoring completed successfully!")
+        logger.info("\n🎉 GitHub Actions Job Validator V2 completed successfully!")
         
     except Exception as e:
         logger.error(f"❌ Error in main: {e}")
