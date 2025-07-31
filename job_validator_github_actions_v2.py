@@ -37,13 +37,12 @@ logger = logging.getLogger(__name__)
 
 class GitHubActionsJobValidatorV2:
     """
-    GitHub Actions Job Validator V2 with Job Scoring Integration
+    GitHub Actions Job Validator V2
     
     This enhanced version:
     - Limits processing to 100 jobs per run
-    - Prioritizes newest unscored jobs by publication date
     - Validates job validity (checks for expired jobs)
-    - Scores jobs using AI analysis
+    - Orders jobs by publication date (oldest first) to check expired jobs first
     - Optimized for CI/CD environments
     """
     def __init__(self, supabase_url=None, supabase_key=None):
@@ -62,7 +61,7 @@ class GitHubActionsJobValidatorV2:
             raise ValueError("Supabase credentials required")
     
     def get_active_jobs(self, max_jobs=100):
-        """Get active (non-deleted) jobs from the database, prioritizing newest unscored jobs"""
+        """Get active (non-deleted) jobs from the database for validation"""
         try:
             # First, get the total count of active jobs
             count_result = self.supabase.table('jobs').select('*', count='exact').is_('deleted_at', 'null').execute()
@@ -74,36 +73,17 @@ class GitHubActionsJobValidatorV2:
                 logger.warning("⚠️ No active jobs found in database")
                 return []
             
-            # Get unscored jobs first, ordered by publication date (newest first)
-            logger.info("🔍 Fetching unscored jobs first, ordered by publication date (newest first)")
+            # Get jobs for validation, ordered by publication date (oldest first to check expired jobs first)
+            logger.info("🔍 Fetching jobs for validation, ordered by publication date (oldest first)")
             
-            # Query for unscored jobs, ordered by publication date descending
-            unscored_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').is_('cfo_score', 'null').order('publication_date', desc=True).limit(max_jobs)
-            unscored_result = unscored_query.execute()
+            # Query for active jobs, ordered by publication date ascending (oldest first)
+            jobs_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date', asc=True).limit(max_jobs)
+            jobs_result = jobs_query.execute()
             
-            unscored_jobs = unscored_result.data or []
-            logger.info(f"📥 Found {len(unscored_jobs)} unscored jobs")
+            jobs = jobs_result.data or []
+            logger.info(f"📥 Found {len(jobs)} jobs for validation (limited to {max_jobs})")
             
-            # If we have enough unscored jobs, return them
-            if len(unscored_jobs) >= max_jobs:
-                logger.info(f"✅ Returning {len(unscored_jobs)} unscored jobs (limited to {max_jobs})")
-                return unscored_jobs[:max_jobs]
-            
-            # If we need more jobs, get some scored jobs too (newest first)
-            remaining_slots = max_jobs - len(unscored_jobs)
-            logger.info(f"🔍 Need {remaining_slots} more jobs, fetching scored jobs (newest first)")
-            
-            scored_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').not_.is_('cfo_score', 'null').order('publication_date', desc=True).limit(remaining_slots)
-            scored_result = scored_query.execute()
-            
-            scored_jobs = scored_result.data or []
-            logger.info(f"📥 Found {len(scored_jobs)} scored jobs")
-            
-            # Combine unscored and scored jobs
-            all_jobs = unscored_jobs + scored_jobs
-            logger.info(f"✅ Retrieved {len(all_jobs)} total jobs (unscored: {len(unscored_jobs)}, scored: {len(scored_jobs)})")
-            
-            return all_jobs
+            return jobs
                 
         except Exception as e:
             logger.error(f"❌ Error retrieving jobs from database: {e}")
@@ -479,9 +459,9 @@ class GitHubActionsJobValidatorV2:
             return {"total_jobs": 0, "active_jobs": 0, "deleted_jobs": 0}
 
 async def main():
-    """Main function to run the GitHub Actions validator V2 with job scoring"""
+    """Main function to run the GitHub Actions validator V2"""
     try:
-        logger.info("🚀 Starting GitHub Actions Job Validator V2 with Scoring")
+        logger.info("🚀 Starting GitHub Actions Job Validator V2")
         logger.info("=" * 60)
         
         # Initialize the validator
