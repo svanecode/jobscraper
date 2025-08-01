@@ -277,7 +277,7 @@ Beskrivelse: {job.get('description', 'N/A')}"""
     
     def update_job_score(self, job_id: str, score: int) -> bool:
         """
-        Update the job score in the database and set last_seen timestamp
+        Update the job score in the database
         
         Args:
             job_id: Job ID
@@ -287,13 +287,9 @@ Beskrivelse: {job.get('description', 'N/A')}"""
             True if successful, False otherwise
         """
         try:
-            from datetime import datetime, timezone
-            current_time = datetime.now(timezone.utc).isoformat()
-            
             response = self.supabase.table('jobs').update({
                 'cfo_score': score,
-                'scored_at': 'now()',
-                'last_seen': current_time
+                'scored_at': 'now()'
             }).eq('job_id', job_id).execute()
             
             if response.data:

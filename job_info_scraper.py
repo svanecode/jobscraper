@@ -398,11 +398,9 @@ class JobInfoScraper:
                         update_data[key] = value.strip()
             
             # Always add the job_info timestamp to mark this job as processed
-            # Also update last_seen to indicate this job was successfully accessed
             from datetime import datetime, timezone
             current_time = datetime.now(timezone.utc).isoformat()
             update_data['job_info'] = current_time
-            update_data['last_seen'] = current_time
             
             if not update_data:
                 logger.warning(f"No valid data to update for job {job_id}")
@@ -421,34 +419,7 @@ class JobInfoScraper:
             logger.error(f"Error updating job {job_id}: {e}")
             return False
     
-    def _update_last_seen_only(self, job_id: str) -> bool:
-        """
-        Update only the last_seen timestamp for a job
-        
-        Args:
-            job_id: Job ID
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            from datetime import datetime, timezone
-            current_time = datetime.now(timezone.utc).isoformat()
-            
-            response = self.supabase.table('jobs').update({
-                'last_seen': current_time
-            }).eq('job_id', job_id).execute()
-            
-            if response.data:
-                logger.info(f"Updated last_seen for job {job_id}")
-                return True
-            else:
-                logger.error(f"Failed to update last_seen for job {job_id}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error updating last_seen for job {job_id}: {e}")
-            return False
+
     
     async def process_jobs_with_missing_info(self, max_jobs=None, delay=1.0, newest_first=True, limit_newest=None):
         """
@@ -527,8 +498,6 @@ class JobInfoScraper:
                     total_errors += 1
                     logger.error(f"Failed to update job {job_id}")
             else:
-                # Even if scraping failed, update last_seen since we accessed the job
-                self._update_last_seen_only(job_id)
                 total_errors += 1
                 logger.error(f"Failed to scrape job {job_id}")
             
