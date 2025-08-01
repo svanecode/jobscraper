@@ -1,4 +1,4 @@
-name: Daily Job Validator, Scraper, Info Scraper and AI Scorer
+name: Daily Job Validator, Scraper and AI Scorer
 
 on:
   schedule:
@@ -87,14 +87,7 @@ jobs:
         python playwright_scraper.py
         echo "Scraper completed successfully"
         
-    - name: Run job info scraper
-      env:
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-      run: |
-        echo "Starting job info scraper to fill missing information..."
-        python tests/run_job_info_scraper.py --max-jobs 50 --delay 2.0
-        echo "Job info scraper completed successfully"
+
         
     - name: Run AI job scorer
       env:
@@ -119,11 +112,11 @@ jobs:
     - name: Send notification on success
       if: success()
       run: |
-        echo "✅ Daily job validation, scraping, info scraping and AI scoring completed successfully!"
-        echo "📊 Expired jobs cleaned up, new jobs scraped, missing info filled, and jobs scored for CFO services"
+        echo "✅ Daily job validation, scraping and AI scoring completed successfully!"
+        echo "📊 Expired jobs cleaned up, new jobs scraped, and jobs scored for CFO services"
         
     - name: Send notification on failure
       if: failure()
       run: |
-        echo "❌ Daily job validation, scraping, info scraping and AI scoring failed!"
+        echo "❌ Daily job validation, scraping and AI scoring failed!"
         echo "Please check the logs for details" 
