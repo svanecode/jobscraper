@@ -184,6 +184,13 @@ class JobScraperAndCleanup:
                         total_jobs += len(page_jobs)
                         logger.info(f"Found {len(page_jobs)} jobs on page {page_num}")
                         
+                        # Save jobs from this page to database in real-time
+                        save_success = self.save_page_jobs_to_supabase(page_jobs)
+                        if save_success:
+                            logger.info(f"💾 Real-time save: Successfully saved {len(page_jobs)} jobs from page {page_num}")
+                        else:
+                            logger.warning(f"⚠️ Real-time save: Failed to save jobs from page {page_num}")
+                        
                         # Update last_seen for jobs from this page in real-time
                         self._update_last_seen_for_all_jobs(page_jobs)
                         logger.info(f"✅ Updated last_seen for {len(page_jobs)} jobs from page {page_num}")
@@ -405,6 +412,58 @@ class JobScraperAndCleanup:
             logger.error(f"Error saving to Supabase: {e}")
             return False
     
+    def save_page_jobs_to_supabase(self, page_jobs, table_name='jobs'):
+        """Save jobs from a single page to Supabase in real-time"""
+        if not self.supabase:
+            logger.error("Supabase client not initialized")
+            return False
+        
+        if not page_jobs:
+            logger.warning("No jobs to save from this page")
+            return False
+        
+        try:
+            # Get existing job IDs to check for duplicates
+            job_ids = [job['job_id'] for job in page_jobs]
+            
+            # Check which jobs already exist
+            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).execute()
+            existing_job_ids = {job['job_id'] for job in existing_jobs_result.data}
+            
+            # Separate new and existing jobs
+            new_jobs = []
+            existing_jobs = []
+            
+            for job in page_jobs:
+                if job['job_id'] in existing_job_ids:
+                    existing_jobs.append(job)
+                else:
+                    new_jobs.append(job)
+            
+            # Log the breakdown for this page
+            logger.info(f"📄 Page analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs")
+            
+            if new_jobs:
+                # Prepare data for Supabase (remove scraped_at timestamp as it will be set by database)
+                jobs_data = []
+                for job in new_jobs:
+                    job_data = job.copy()
+                    # Remove scraped_at as it will be handled by database
+                    job_data.pop('scraped_at', None)
+                    jobs_data.append(job_data)
+                
+                # Insert only new jobs from this page
+                result = self.supabase.table(table_name).insert(jobs_data).execute()
+                logger.info(f"💾 Real-time save: Inserted {len(new_jobs)} new jobs to Supabase")
+            else:
+                logger.info("ℹ️ No new jobs to insert from this page - all jobs already exist in database")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving page jobs to Supabase: {e}")
+            return False
+    
     def _update_last_seen_for_all_jobs(self, jobs):
         """Update last_seen timestamp for ALL jobs found during scraping (new, existing, and soft deleted)"""
         try:
@@ -559,32 +618,25 @@ async def main():
         logger.info("📥 STEP 1: Scraping jobs from Jobindex")
         scraping_success = await scraper_cleanup.scrape_jobs()
         
-        # Step 2: Save jobs to database and update last_seen (even if scraping failed partially)
+        # Step 2: Clean up old jobs (jobs are now saved in real-time during scraping)
         if len(scraper_cleanup.jobs) > 0:
-            logger.info("💾 STEP 2: Saving jobs to database")
-            saving_success = scraper_cleanup.save_jobs_to_supabase()
+            logger.info("🧹 STEP 2: Cleaning up old jobs")
+            cleanup_stats = scraper_cleanup.cleanup_old_jobs()
             
-            if saving_success:
-                # Step 3: Clean up old jobs
-                logger.info("🧹 STEP 3: Cleaning up old jobs")
-                cleanup_stats = scraper_cleanup.cleanup_old_jobs()
-                
-                # Get and display comprehensive statistics
-                stats = scraper_cleanup.get_stats()
-                logger.info("📊 COMPREHENSIVE STATISTICS:")
-                logger.info(f"  Total jobs in database: {stats['total_jobs']}")
-                logger.info(f"  Active jobs: {stats['active_jobs']}")
-                logger.info(f"  Deleted jobs: {stats['deleted_jobs']}")
-                logger.info(f"  Jobs scraped this run: {stats['scraped_jobs']}")
-                logger.info(f"  Jobs that would be cleaned up next run: {stats['old_jobs_count']}")
-                logger.info(f"  Cleanup threshold: {stats['cleanup_hours']} hours")
-                logger.info(f"  Jobs deleted this run: {cleanup_stats['total_deleted']}")
-                
-                logger.info("\n🎉 Combined scraper and cleanup completed successfully!")
-            else:
-                logger.error("❌ Failed to save jobs to database")
+            # Get and display comprehensive statistics
+            stats = scraper_cleanup.get_stats()
+            logger.info("📊 COMPREHENSIVE STATISTICS:")
+            logger.info(f"  Total jobs in database: {stats['total_jobs']}")
+            logger.info(f"  Active jobs: {stats['active_jobs']}")
+            logger.info(f"  Deleted jobs: {stats['deleted_jobs']}")
+            logger.info(f"  Jobs scraped this run: {stats['scraped_jobs']}")
+            logger.info(f"  Jobs that would be cleaned up next run: {stats['old_jobs_count']}")
+            logger.info(f"  Cleanup threshold: {stats['cleanup_hours']} hours")
+            logger.info(f"  Jobs deleted this run: {cleanup_stats['total_deleted']}")
+            
+            logger.info("\n🎉 Combined scraper and cleanup completed successfully!")
         else:
-            logger.warning("⚠️ No jobs scraped, skipping save and cleanup steps")
+            logger.warning("⚠️ No jobs scraped, skipping cleanup steps")
             if not scraping_success:
                 logger.error("❌ Failed to scrape jobs")
         
