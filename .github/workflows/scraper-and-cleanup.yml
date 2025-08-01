@@ -47,6 +47,22 @@ jobs:
           echo "SUPABASE_ANON_KEY is configured"
         fi
         
+    - name: Verify AI job scorer workflow exists
+      run: |
+        echo "Verifying AI job scorer workflow configuration..."
+        if [ -f ".github/workflows/ai-job-scorer.yml" ]; then
+          echo "✅ AI job scorer workflow file exists"
+          
+          # Check if it listens for the correct event type
+          if grep -q "start-ai-scorer" .github/workflows/ai-job-scorer.yml; then
+            echo "✅ AI job scorer workflow is configured to listen for 'start-ai-scorer' event"
+          else
+            echo "❌ AI job scorer workflow is NOT configured to listen for 'start-ai-scorer' event"
+          fi
+        else
+          echo "❌ AI job scorer workflow file does not exist"
+        fi
+        
     - name: Run scraper and cleanup
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -60,11 +76,24 @@ jobs:
       if: success()
       run: |
         echo "Triggering AI job scorer workflow..."
-        curl -X POST \
+        echo "Repository: ${{ github.repository }}"
+        echo "Event type: start-ai-scorer"
+        
+        response=$(curl -X POST \
           -H "Accept: application/vnd.github.v3+json" \
           -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
           https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -d '{"event_type":"start-ai-scorer"}'
+          -d '{"event_type":"start-ai-scorer"}' \
+          -w "\nHTTP Status: %{http_code}\n")
+        
+        echo "Response: $response"
+        
+        if [[ $response == *"HTTP Status: 204"* ]]; then
+          echo "✅ AI job scorer workflow triggered successfully"
+        else
+          echo "❌ Failed to trigger AI job scorer workflow"
+          echo "Response: $response"
+        fi
         
     - name: Send notification on success
       if: success()
