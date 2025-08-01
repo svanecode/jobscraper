@@ -134,8 +134,9 @@ class JobScraperAndCleanup:
                 total_jobs = 0
                 page_num = 1
                 has_more_pages = True
+                max_pages = 20  # Safety limit to prevent infinite loops
                 
-                while has_more_pages:
+                while has_more_pages and page_num <= max_pages:
                     logger.info(f"📄 Scraping page {page_num}")
                     
                     # Extract jobs from current page
@@ -146,47 +147,33 @@ class JobScraperAndCleanup:
                         logger.info(f"Found {len(page_jobs)} jobs on page {page_num}")
                     else:
                         logger.warning(f"No jobs found on page {page_num}")
+                        break  # No jobs on current page, stop
                     
-                    # Check if there's a next page
+                    # Try to go to next page using URL parameter
                     try:
-                        # Look for next page button - try multiple selectors
-                        next_button_selectors = [
-                            'a[aria-label="Næste"]',
-                            'a[aria-label="Next"]',
-                            '.pagination .next a',
-                            '.pagination a[rel="next"]',
-                            'a[data-testid="next-page"]',
-                            '.next-page',
-                            'a:has-text("Næste")',
-                            'a:has-text("Next")'
-                        ]
+                        next_url = f"{self.search_url}?page={page_num + 1}"
+                        logger.info(f"Attempting to navigate to: {next_url}")
                         
-                        next_button = None
-                        for selector in next_button_selectors:
-                            next_button = await page.query_selector(selector)
-                            if next_button:
-                                # Check if the button is enabled/clickable
-                                is_disabled = await next_button.get_attribute('disabled') or await next_button.get_attribute('aria-disabled')
-                                if not is_disabled:
-                                    break
-                                else:
-                                    next_button = None
+                        # Navigate to next page
+                        await page.goto(next_url, wait_until='domcontentloaded', timeout=15000)
+                        await page.wait_for_load_state('domcontentloaded', timeout=5000)
                         
-                        if next_button:
-                            # Click the next button
-                            await next_button.click()
-                            await page.wait_for_load_state('domcontentloaded', timeout=5000)
-                            page_num += 1
-                            logger.info(f"Navigated to page {page_num}")
-                        else:
-                            logger.info("No next page button found or reached last page, stopping pagination")
+                        # Small delay between pages to be respectful
+                        await asyncio.sleep(1)
+                        
+                        page_num += 1
+                        logger.info(f"Successfully navigated to page {page_num}")
+                        
+                        # Check if we've reached the maximum pages
+                        if page_num > max_pages:
+                            logger.info(f"Reached maximum page limit ({max_pages}), stopping pagination")
                             has_more_pages = False
                             
                     except Exception as e:
-                        logger.warning(f"Failed to navigate to next page: {e}")
+                        logger.warning(f"Failed to navigate to page {page_num + 1}: {e}")
                         has_more_pages = False
                 
-                logger.info(f"🎉 Scraping completed! Total jobs found: {total_jobs} across {page_num} pages")
+                logger.info(f"🎉 Scraping completed! Total jobs found: {total_jobs} across {page_num - 1} pages")
                 return True
                 
             except Exception as e:
