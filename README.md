@@ -1,6 +1,6 @@
 # Jobindex Scraper with Supabase Integration
 
-A Python scraper that extracts job listings from [Jobindex.dk](https://www.jobindex.dk/jobsoegning/kontor) and saves them directly to Supabase database, with automatic validation and soft deletion of expired jobs.
+A Python scraper that extracts job listings from [Jobindex.dk](https://www.jobindex.dk/jobsoegning/kontor) and saves them directly to Supabase database, with automatic validation, soft deletion of expired jobs, and AI-powered scoring for CFO services.
 
 ## Features
 
@@ -63,7 +63,7 @@ CREATE INDEX idx_jobs_deleted_at ON jobs(deleted_at);
 CREATE INDEX idx_jobs_last_seen ON jobs(last_seen);
 ```
 
-**Note:** If you already have a table without the `deleted_at` or `last_seen` columns, run the `add_deleted_at_column.sql` and `add_last_seen_column.sql` scripts to add them.
+**Note:** The database table should include `deleted_at` and `last_seen` columns for proper functionality.
 
 ### 4. Run the Combined Scraper and Cleanup
 
@@ -79,12 +79,6 @@ python job_scraper_and_cleanup.py
 ### 5. Score Jobs for CFO Interim Services (Optional)
 
 ```bash
-# First, add scoring columns to database
-# Run the SQL in add_scoring_columns.sql in your Supabase SQL editor
-
-# Test scoring with a small sample
-python tests/score_10_jobs.py
-
 # Score all active unscored jobs
 python job_scorer.py
 ```
