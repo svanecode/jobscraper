@@ -43,25 +43,56 @@ class JobInfoScraper:
     def get_jobs_with_missing_info(self) -> List[Dict]:
         """
         Get jobs from database that have missing company, company_url, or description
+        AND have not been processed by job_info scraper (no job_info timestamp)
+        Ordered by created_at descending (newest first)
         
         Returns:
-            List of job dictionaries with missing information
+            List of job dictionaries with missing information, newest first
         """
         try:
-            # Query for jobs with missing information
+            # Query for jobs with missing information AND no job_info timestamp, ordered by created_at descending
             response = self.supabase.table('jobs').select('*').or_(
                 'company.is.null,company.eq.,company_url.is.null,company_url.eq.,description.is.null,description.eq.'
-            ).is_('deleted_at', 'null').execute()
+            ).is_('deleted_at', 'null').is_('job_info', 'null').order('created_at', desc=True).execute()
             
             if response.data:
-                logger.info(f"Found {len(response.data)} jobs with missing information")
+                logger.info(f"Found {len(response.data)} jobs with missing information and no job_info timestamp (ordered by newest first)")
                 return response.data
             else:
-                logger.info("No jobs with missing information found")
+                logger.info("No jobs with missing information and no job_info timestamp found")
                 return []
                 
         except Exception as e:
             logger.error(f"Error fetching jobs with missing info: {e}")
+            return []
+    
+    def get_jobs_with_missing_info_limited(self, limit: int = 100) -> List[Dict]:
+        """
+        Get jobs from database that have missing company, company_url, or description
+        AND have not been processed by job_info scraper (no job_info timestamp)
+        Limited to the newest N jobs, ordered by created_at descending
+        
+        Args:
+            limit: Maximum number of jobs to return (default: 100)
+        
+        Returns:
+            List of job dictionaries with missing information, newest first
+        """
+        try:
+            # Query for jobs with missing information AND no job_info timestamp, ordered by created_at descending, limited
+            response = self.supabase.table('jobs').select('*').or_(
+                'company.is.null,company.eq.,company_url.is.null,company_url.eq.,description.is.null,description.eq.'
+            ).is_('deleted_at', 'null').is_('job_info', 'null').order('created_at', desc=True).limit(limit).execute()
+            
+            if response.data:
+                logger.info(f"Found {len(response.data)} jobs with missing information and no job_info timestamp (newest {limit}, ordered by newest first)")
+                return response.data
+            else:
+                logger.info("No jobs with missing information and no job_info timestamp found")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching jobs with missing info (limited): {e}")
             return []
     
     async def scrape_job_info(self, job_id: str) -> Optional[Dict]:
@@ -103,274 +134,172 @@ class JobInfoScraper:
                 # Extract job information
                 job_info = {}
                 
-                # First try to find company name in page text (before looking at links)
+                # Extract job title - use proper selectors and clean up
+                title = None
+                
+                # First try the main job title in h4 tag
+                try:
+                    title_element = await page.query_selector('h4 a')
+                    if title_element:
+                        title = await title_element.inner_text()
+                        if title and title.strip():
+                            title = title.strip()
+                            logger.debug(f"Found title in h4: '{title}'")
+                except Exception as e:
+                    logger.debug(f"Error getting title from h4: {e}")
+                
+                # If no title found, try the sr-only h1 (but clean it up)
+                if not title:
+                    try:
+                        title_element = await page.query_selector('h1.sr-only')
+                        if title_element:
+                            title = await title_element.inner_text()
+                            if title and title.strip():
+                                # Remove "Jobannonce: " prefix if present
+                                title = title.strip()
+                                if title.startswith('Jobannonce: '):
+                                    title = title[12:]  # Remove "Jobannonce: " prefix
+                                logger.debug(f"Found title in sr-only h1: '{title}'")
+                    except Exception as e:
+                        logger.debug(f"Error getting title from sr-only h1: {e}")
+                
+                # If still no title, try the page title
+                if not title:
+                    try:
+                        page_title = await page.title()
+                        if page_title and '| Jobindex' in page_title:
+                            # Extract title from page title (format: "Title - JobID | Jobindex")
+                            title = page_title.split(' - ')[0].strip()
+                            logger.debug(f"Found title from page title: '{title}'")
+                    except Exception as e:
+                        logger.debug(f"Error getting title from page title: {e}")
+                
+                job_info['title'] = title
+                
+                # Extract company name - use the proper selector
                 company_name = None
                 company_url = None
                 
-                # Try to find company name in page text first
+                # Try the company div in the toolbar
                 try:
-                    page_text = await page.inner_text('body')
-                    
-                    # Look for specific company patterns in text
-                    import re
-                    text_company_patterns = [
-                        r'KU\s*-\s*FA\s*-\s*Kbh\s*K',  # Specific KU pattern
-                        r'([A-ZÆØÅ][a-zæøå\s&]+?)\s*-\s*([A-ZÆØÅ][a-zæøå\s&]+?)\s*-\s*([A-ZÆØÅ][a-zæøå\s&]+?)',  # Pattern with dashes
-                        r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+A/S',  # Company with A/S
-                        r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+APS',  # Company with APS
-                    ]
-                    
-                    for pattern in text_company_patterns:
-                        matches = re.findall(pattern, page_text, re.IGNORECASE)
-                        if matches:
-                            if isinstance(matches[0], tuple):
-                                potential_company = ' '.join(matches[0]).strip()
-                            else:
-                                potential_company = matches[0].strip()
-                            
-                            # Filter out job titles
-                            if not any(keyword in potential_company.lower() for keyword in ['specialist', 'assistant', 'worker', 'manager', 'consultant', 'analyst', 'coordinator', 'bæredygtighed', 'indkøb']):
-                                company_name = potential_company
-                                logger.debug(f"Found company in text: '{company_name}'")
-                                break
+                    company_element = await page.query_selector('.jix-toolbar-top__company')
+                    if company_element:
+                        company_name = await company_element.inner_text()
+                        if company_name and company_name.strip():
+                            company_name = company_name.strip()
+                            logger.debug(f"Found company in toolbar: '{company_name}'")
                 except Exception as e:
-                    logger.debug(f"Error finding company in text: {e}")
+                    logger.debug(f"Error getting company from toolbar: {e}")
                 
-                # Define company selectors for fallback
-                company_selectors = [
-                    'h1 + div a',  # Company link near the title (most reliable)
-                    '.jix-toolbar-top__company a',  # Company in toolbar
-                    '.company-name a',  # Company name link
-                    '.job-company a',  # Job company link
-                    'a[href*="/virksomhed/"]',  # Any link containing /virksomhed/ (fallback)
-                    'h2 a',  # Company name in h2 tag
-                    '.job-header a',  # Company in job header
-                    '.employer a',  # Employer link
-                    'h1 + div',  # Company div near title (without link)
-                    '.job-company',  # Job company div
-                    '.employer',  # Employer div
-                ]
-                
-                # If no company found in text, try selectors
+                # If no company found, try to find it in the job link
                 if not company_name:
-                    for selector in company_selectors:
-                        try:
-                            company_elements = await page.query_selector_all(selector)
-                            logger.debug(f"Found {len(company_elements)} elements with selector: {selector}")
-                            
-                            for company_element in company_elements:
-                                temp_company_name = await company_element.inner_text()
-                                temp_company_url = await company_element.get_attribute('href')
-                                
-                                logger.debug(f"Element text: '{temp_company_name}', href: '{temp_company_url}'")
-                                
-                                # Filter out non-company links
-                                if temp_company_name and temp_company_name.strip():
-                                    # Skip common non-company text
-                                    skip_texts = ['gem', 'del', 'kopier', 'se jobbet', 'ansøg', 'log ind', 'opret profil', 'se virksomhedsprofil']
-                                    if temp_company_name.strip().lower() in skip_texts:
-                                        logger.debug(f"Skipping '{temp_company_name}' (in skip list)")
-                                        continue
-                                    
-                                    # Check if this looks like a company name
-                                    if any(keyword in temp_company_name.lower() for keyword in ['ku', 'universitet', 'university', 'a/s', 'aps', 'k/s', 's/a']):
-                                        if temp_company_url:
-                                            temp_company_url = urljoin(self.base_url, temp_company_url)
-                                        company_name = temp_company_name
-                                        company_url = temp_company_url
-                                        logger.debug(f"Found company: '{company_name}' with URL: '{company_url}'")
-                                        break
-                                    
-                                    # Prefer links that contain /virksomhed/
-                                    if temp_company_url and '/virksomhed/' in temp_company_url:
-                                        if temp_company_url:
-                                            temp_company_url = urljoin(self.base_url, temp_company_url)
-                                        company_name = temp_company_name
-                                        company_url = temp_company_url
-                                        logger.debug(f"Found company: '{company_name}' with URL: '{company_url}'")
-                                        break
-                                    
-                                    # Skip if this looks like a job title (contains job-related words)
-                                    if any(keyword in temp_company_name.lower() for keyword in ['specialist', 'assistant', 'worker', 'manager', 'consultant', 'analyst', 'coordinator', 'bæredygtighed', 'indkøb']):
-                                        logger.debug(f"Skipping '{temp_company_name}' (looks like job title)")
-                                        continue
-                            
-                            if company_name and company_name.strip():
-                                break
-                        except Exception as e:
-                            logger.debug(f"Error with selector {selector}: {e}")
-                            continue
-                
-                job_info['company'] = company_name.strip() if company_name else None
-                job_info['company_url'] = company_url
-                
-                # If we still don't have a company name, try to find it in the page text
-                if not job_info['company'] or job_info['company'] in ['Se jobbet', 'Se virksomhedsprofil']:
-                    # First try a direct search for specific company patterns
                     try:
-                        page_text = await page.inner_text('body')
-                        logger.debug(f"Page text preview: {page_text[:1000]}...")
-                        
-                        # Direct search for KU pattern
-                        if 'KU - FA - Kbh K' in page_text:
-                            job_info['company'] = 'KU - FA - Kbh K'
-                            logger.debug("Found KU company name directly")
-                        elif 'KU' in page_text and 'FA' in page_text and 'Kbh K' in page_text:
-                            # Find the exact pattern
-                            import re
-                            ku_match = re.search(r'KU\s*-\s*FA\s*-\s*Kbh\s*K', page_text)
-                            if ku_match:
-                                job_info['company'] = ku_match.group(0)
-                                logger.debug(f"Found KU company name via regex: {ku_match.group(0)}")
+                        job_link_element = await page.query_selector('h4 a')
+                        if job_link_element:
+                            href = await job_link_element.get_attribute('href')
+                            if href and 'frivilligjob.dk' in href:
+                                # This is a volunteer job, extract company from the link or title
+                                if title and ' - ' in title:
+                                    company_name = title.split(' - ')[-1].strip()
+                                    logger.debug(f"Extracted company from title: '{company_name}'")
                     except Exception as e:
-                        logger.debug(f"Error in direct KU search: {e}")
+                        logger.debug(f"Error extracting company from job link: {e}")
                 
-                # If still no company name, try the general patterns
-                if not job_info['company'] or job_info['company'] in ['Se jobbet', 'Se virksomhedsprofil']:
+                # If still no company, try to find it in the page text
+                if not company_name:
                     try:
-                        # Look for company name in the page content
                         page_text = await page.inner_text('body')
-                        logger.debug(f"Page text preview: {page_text[:500]}...")
                         
-                        # Common company patterns in Danish job pages
-                        import re
+                        # Look for specific company patterns
                         company_patterns = [
-                            r'DanChurchAid',  # Specific company from the example
-                            r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+is\s+seeking',  # English pattern
-                            r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+søger',  # Danish pattern
-                            r'hos\s+([A-ZÆØÅ][a-zæøå\s&]+?)(?:\s+i\s+|\s+,\s+|\s*$)',  # "hos" pattern
-                            r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+er\s+',  # "er" pattern
-                            r'KU\s*-\s*FA\s*-\s*Kbh\s*K',  # Specific KU pattern
+                            r'Mental Talk',  # Specific company from the example
                             r'([A-ZÆØÅ][a-zæøå\s&]+?)\s*-\s*([A-ZÆØÅ][a-zæøå\s&]+?)\s*-\s*([A-ZÆØÅ][a-zæøå\s&]+?)',  # Pattern with dashes
+                            r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+A/S',  # Company with A/S
+                            r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+APS',  # Company with APS
                         ]
                         
                         for pattern in company_patterns:
                             matches = re.findall(pattern, page_text, re.IGNORECASE)
                             if matches:
                                 if isinstance(matches[0], tuple):
-                                    # Handle multiple groups
                                     potential_company = ' '.join(matches[0]).strip()
                                 else:
                                     potential_company = matches[0].strip()
-                                # Filter out common non-company words
-                                if len(potential_company) > 2 and potential_company.lower() not in ['job', 'stilling', 'position', 'arbejde', 'climate', 'advocacy', 'officer']:
-                                    job_info['company'] = potential_company
-                                    logger.debug(f"Found company via text pattern: '{potential_company}'")
+                                
+                                # Filter out job titles and navigation text
+                                if not any(keyword in potential_company.lower() for keyword in ['specialist', 'assistant', 'worker', 'manager', 'consultant', 'analyst', 'coordinator', 'bæredygtighed', 'indkøb', 'gem', 'del', 'kopier']):
+                                    company_name = potential_company
+                                    logger.debug(f"Found company via text pattern: '{company_name}'")
                                     break
                     except Exception as e:
-                        logger.debug(f"Error finding company via text patterns: {e}")
+                        logger.debug(f"Error finding company in text: {e}")
                 
-                # Extract job description with better selectors and logic
-                description_selectors = [
-                    '.PaidJob-inner',  # Job content area
-                    '.job-description',  # Main job description
-                    '[data-testid="job-description"]',  # Test ID for description
-                    '.job-content',  # Job content
-                    '.job-details',  # Job details
-                    '.job-body',  # Job body
-                    '.description',  # Description
-                    '.content',  # Content
-                    'article p',  # Article paragraphs (more specific)
-                    '.job-text',  # Job text
-                    'p',  # All paragraphs
-                    'div',  # All divs
-                    'span',  # All spans
-                ]
+                job_info['company'] = company_name
+                job_info['company_url'] = company_url
                 
+                # Extract job description - use the proper selector
                 description = None
-                for selector in description_selectors:
+                
+                # Try to find the description in the job content area
+                try:
+                    # Look for the description paragraph
+                    desc_element = await page.query_selector('.jix_robotjob-inner p')
+                    if desc_element:
+                        description = await desc_element.inner_text()
+                        if description and description.strip():
+                            description = description.strip()
+                            logger.debug(f"Found description in p tag: '{description[:100]}...'")
+                except Exception as e:
+                    logger.debug(f"Error getting description from p tag: {e}")
+                
+                # If no description found, try to find it in the job content area
+                if not description:
                     try:
-                        desc_element = await page.query_selector(selector)
-                        if desc_element:
-                            description = await desc_element.inner_text()
-                            if description and description.strip():
-                                # Clean up the description
-                                description = re.sub(r'\s+', ' ', description.strip())
-                                # Check if description is meaningful (not just navigation text)
-                                if len(description) > 50:  # Minimum meaningful length
-                                    logger.debug(f"Found description with selector '{selector}': {description[:100]}...")
+                        job_content = await page.query_selector('.jix_robotjob-inner')
+                        if job_content:
+                            # Get all text from the job content area
+                            content_text = await job_content.inner_text()
+                            
+                            # Look for the actual job description (not metadata)
+                            lines = content_text.split('\n')
+                            for line in lines:
+                                line = line.strip()
+                                if line and len(line) > 20:
+                                    # Skip metadata lines
+                                    if any(skip in line.lower() for skip in ['indrykket:', 'hentet fra', 'se jobbet', 'se rejsetid']):
+                                        continue
+                                    # Skip if it's just the title or company
+                                    if line == title or line == company_name:
+                                        continue
+                                    # This looks like a description
+                                    description = line
+                                    logger.debug(f"Found description in job content: '{description[:100]}...'")
                                     break
                     except Exception as e:
-                        logger.debug(f"Error with description selector '{selector}': {e}")
-                        continue
+                        logger.debug(f"Error getting description from job content: {e}")
                 
-                # If no description found with selectors, try to extract from page text
-                if not description or len(description) < 50:
-                    # First try to find the actual job description in the page content
+                # If still no description, try to find it in the page text
+                if not description:
                     try:
-                        # Look for the main job description content
-                        job_content_selectors = [
-                            'p',  # Paragraphs
-                            'div',  # Divs
-                            'span',  # Spans
-                        ]
-                        
-                        for selector in job_content_selectors:
-                            elements = await page.query_selector_all(selector)
-                            for element in elements:
-                                text = await element.inner_text()
-                                if text and len(text.strip()) > 50:
-                                    # Check if it contains job-related content
-                                    if any(keyword in text.lower() for keyword in ['seeking', 'søger', 'recruit', 'position', 'stilling', 'ansvar', 'responsibilities', 'invite', 'inviterer', 'curiosity', 'nysgerrighed', 'imagination', 'fantasi']):
-                                        description = re.sub(r'\s+', ' ', text.strip())
-                                        logger.debug(f"Found description in {selector}: {description[:100]}...")
-                                        break
-                            if description and len(description) > 50:
-                                break
-                    except Exception as e:
-                        logger.debug(f"Error finding description in content elements: {e}")
-                
-                # If still no description, try to find it by looking for text after the job title
-                if not description or len(description) < 50:
-                    try:
-                        # Get all text and look for content that appears after the job title
-                        page_text = await page.inner_text('body')
-                        
-                        # Look for the job title and extract text after it
-                        title_patterns = [
-                            r'Student Worker.*?(?=\n\n|\n[A-Z]|$)',
-                            r'Jobannonce:.*?(?=\n\n|\n[A-Z]|$)',
-                        ]
-                        
-                        for pattern in title_patterns:
-                            matches = re.findall(pattern, page_text, re.DOTALL | re.IGNORECASE)
-                            if matches:
-                                potential_desc = matches[0].strip()
-                                if len(potential_desc) > 20:
-                                    description = re.sub(r'\s+', ' ', potential_desc)
-                                    logger.debug(f"Found description after title: {description[:100]}...")
-                                    break
-                    except Exception as e:
-                        logger.debug(f"Error finding description after title: {e}")
-                
-                # If still no description, try text patterns
-                if not description or len(description) < 50:
-                    try:
-                        # Get all text content and try to find job description
                         page_text = await page.inner_text('body')
                         
                         # Look for job description patterns
-                        import re
                         desc_patterns = [
-                            r'(?:DanChurchAid|DCA)\s+is\s+seeking.*?(?=\n\n|\n[A-Z]|$)',
+                            r'At bidrage.*?(?=\n\n|\n[A-Z]|$)',
                             r'(?:Vi søger|We are looking for|We seek).*?(?=\n\n|\n[A-Z]|$)',
                             r'(?:Jobbet|The position|The role).*?(?=\n\n|\n[A-Z]|$)',
                             r'(?:Ansvar|Responsibilities|Duties).*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:DanChurchAid|DCA).*?(?:is seeking|søger).*?(?=\n\n|\n[A-Z]|$)',
                             r'(?:We are|Vi er).*?(?:seeking|søger).*?(?=\n\n|\n[A-Z]|$)',
                             r'(?:We invite you|Vi inviterer dig).*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:bring your|bring din).*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:curiosity|nysgerrighed).*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:imagination|fantasi).*?(?=\n\n|\n[A-Z]|$)',
                         ]
                         
                         for pattern in desc_patterns:
                             matches = re.findall(pattern, page_text, re.DOTALL | re.IGNORECASE)
                             if matches:
                                 potential_desc = matches[0].strip()
-                                if len(potential_desc) > 50:
+                                if len(potential_desc) > 20:
                                     description = re.sub(r'\s+', ' ', potential_desc)
-                                    logger.debug(f"Found description via text pattern: {description[:100]}...")
+                                    logger.debug(f"Found description via text pattern: '{description[:100]}...'")
                                     break
                     except Exception as e:
                         logger.debug(f"Error finding description via text patterns: {e}")
@@ -386,7 +315,7 @@ class JobInfoScraper:
                         r'Gem.*?(?=\n|$)',
                         r'Del.*?(?=\n|$)',
                         r'Kopier.*?(?=\n|$)',
-                        r'31\.400 job i dag.*?(?=\n|$)',
+                        r'30\.400 job i dag.*?(?=\n|$)',
                         r'For jobsøgere.*?(?=\n|$)',
                         r'For arbejdsgivere.*?(?=\n|$)',
                         r'Jobsøgning.*?(?=\n|$)',
@@ -404,61 +333,33 @@ class JobInfoScraper:
                     # Clean up extra whitespace
                     description = re.sub(r'\s+', ' ', description.strip())
                     
-                    # Only keep if it's still meaningful and doesn't contain too much navigation text
-                    if len(description) < 20 or description.lower().count('job') > 5:
+                    # Only keep if it's still meaningful
+                    if len(description) < 10:
                         description = None
                 
                 job_info['description'] = description
                 
-                # Extract additional information if needed
-                # Job title (in case it's missing)
-                title_selectors = [
-                    'h1',
-                    '.job-title',
-                    '[data-testid="job-title"]',
-                ]
-                
-                title = None
-                for selector in title_selectors:
-                    try:
-                        title_element = await page.query_selector(selector)
-                        if title_element:
-                            title = await title_element.inner_text()
-                            if title and title.strip():
-                                break
-                    except Exception:
-                        continue
-                
-                if title:
-                    # Remove "Jobannonce: " prefix if present
-                    clean_title = title.strip()
-                    if clean_title.startswith('Jobannonce: '):
-                        clean_title = clean_title[12:]  # Remove "Jobannonce: " prefix
-                    job_info['title'] = clean_title
-                
-                # Location (in case it's missing)
-                location_selectors = [
-                    '.job-location',
-                    '.location',
-                    '[data-testid="job-location"]',
-                    '.jix_robotjob--area',
-                ]
-                
+                # Extract location
                 location = None
-                for selector in location_selectors:
-                    try:
-                        location_element = await page.query_selector(selector)
-                        if location_element:
-                            location = await location_element.inner_text()
-                            if location and location.strip():
-                                break
-                    except Exception:
-                        continue
+                try:
+                    location_element = await page.query_selector('.jix_robotjob--area')
+                    if location_element:
+                        location = await location_element.inner_text()
+                        if location and location.strip():
+                            location = location.strip()
+                            logger.debug(f"Found location: '{location}'")
+                except Exception as e:
+                    logger.debug(f"Error getting location: {e}")
                 
                 if location:
-                    job_info['location'] = location.strip()
+                    job_info['location'] = location
                 
                 logger.info(f"Successfully scraped info for job {job_id}")
+                logger.info(f"Title: '{job_info.get('title')}'")
+                logger.info(f"Company: '{job_info.get('company')}'")
+                logger.info(f"Description: '{job_info.get('description', '')[:100]}...'")
+                logger.info(f"Location: '{job_info.get('location')}'")
+                
                 return job_info
                 
             except Exception as e:
@@ -469,7 +370,7 @@ class JobInfoScraper:
     
     def update_job_info(self, job_id: str, job_info: Dict) -> bool:
         """
-        Update job information in the database
+        Update job information in the database and set job_info timestamp
         
         Args:
             job_id: Job ID
@@ -496,6 +397,10 @@ class JobInfoScraper:
                     else:
                         update_data[key] = value.strip()
             
+            # Always add the job_info timestamp to mark this job as processed
+            from datetime import datetime, timezone
+            update_data['job_info'] = datetime.now(timezone.utc).isoformat()
+            
             if not update_data:
                 logger.warning(f"No valid data to update for job {job_id}")
                 return False
@@ -503,7 +408,7 @@ class JobInfoScraper:
             response = self.supabase.table('jobs').update(update_data).eq('job_id', job_id).execute()
             
             if response.data:
-                logger.info(f"Updated job {job_id} with: {list(update_data.keys())}")
+                logger.info(f"Updated job {job_id} with: {list(update_data.keys())} (including job_info timestamp)")
                 return True
             else:
                 logger.error(f"Failed to update job {job_id}")
@@ -513,16 +418,26 @@ class JobInfoScraper:
             logger.error(f"Error updating job {job_id}: {e}")
             return False
     
-    async def process_jobs_with_missing_info(self, max_jobs=None, delay=1.0):
+    async def process_jobs_with_missing_info(self, max_jobs=None, delay=1.0, newest_first=True, limit_newest=None):
         """
-        Process all jobs with missing information
+        Process jobs with missing information, prioritizing newest jobs
         
         Args:
             max_jobs: Maximum number of jobs to process (for testing)
             delay: Delay between requests in seconds
+            newest_first: Whether to prioritize newest jobs (default: True)
+            limit_newest: Limit to newest N jobs (default: None, processes all)
         """
         # Get jobs with missing information
-        jobs = self.get_jobs_with_missing_info()
+        if newest_first and limit_newest:
+            # Get only the newest N jobs
+            jobs = self.get_jobs_with_missing_info_limited(limit_newest)
+        elif newest_first:
+            # Get all jobs, but they're already ordered by newest first
+            jobs = self.get_jobs_with_missing_info()
+        else:
+            # Get all jobs without ordering (original behavior)
+            jobs = self.get_jobs_with_missing_info()
         
         if not jobs:
             logger.info("No jobs with missing information found")
@@ -532,7 +447,12 @@ class JobInfoScraper:
             jobs = jobs[:max_jobs]
             logger.info(f"Processing {len(jobs)} jobs (limited for testing)")
         else:
-            logger.info(f"Processing {len(jobs)} jobs with missing information")
+            if newest_first and limit_newest:
+                logger.info(f"Processing {len(jobs)} newest jobs with missing information (limited to {limit_newest})")
+            elif newest_first:
+                logger.info(f"Processing {len(jobs)} jobs with missing information (newest first)")
+            else:
+                logger.info(f"Processing {len(jobs)} jobs with missing information")
         
         # Process jobs
         total_processed = 0
@@ -543,6 +463,11 @@ class JobInfoScraper:
             job_id = job.get('job_id')
             if not job_id:
                 logger.warning(f"Job without job_id found, skipping")
+                continue
+            
+            # Check if job already has job_info timestamp (already processed)
+            if job.get('job_info'):
+                logger.info(f"Skipping job {job_id} - already processed (job_info timestamp: {job.get('job_info')})")
                 continue
             
             logger.info(f"Processing job {i}/{len(jobs)}: {job_id}")
@@ -598,16 +523,21 @@ class JobInfoScraper:
         """
         try:
             # Get all active jobs
-            all_jobs_response = self.supabase.table('jobs').select('company,company_url,description').is_('deleted_at', 'null').execute()
+            all_jobs_response = self.supabase.table('jobs').select('company,company_url,description,job_info').is_('deleted_at', 'null').execute()
             
             if not all_jobs_response.data:
-                return {"total_jobs": 0, "missing_info": 0, "missing_fields": {}}
+                return {"total_jobs": 0, "missing_info": 0, "missing_fields": {}, "processed_by_job_info": 0}
             
             total_jobs = len(all_jobs_response.data)
             missing_info_count = 0
+            processed_by_job_info_count = 0
             missing_fields = {'company': 0, 'company_url': 0, 'description': 0}
             
             for job in all_jobs_response.data:
+                # Count jobs processed by job_info scraper
+                if job.get('job_info'):
+                    processed_by_job_info_count += 1
+                
                 has_missing = False
                 if not job.get('company') or not job.get('company').strip():
                     missing_fields['company'] += 1
@@ -626,7 +556,9 @@ class JobInfoScraper:
                 "total_jobs": total_jobs,
                 "missing_info": missing_info_count,
                 "missing_fields": missing_fields,
-                "missing_percentage": (missing_info_count / total_jobs * 100) if total_jobs > 0 else 0
+                "missing_percentage": (missing_info_count / total_jobs * 100) if total_jobs > 0 else 0,
+                "processed_by_job_info": processed_by_job_info_count,
+                "processed_percentage": (processed_by_job_info_count / total_jobs * 100) if total_jobs > 0 else 0
             }
             
         except Exception as e:
@@ -644,15 +576,18 @@ async def main():
         logger.info("=== INITIAL STATISTICS ===")
         logger.info(f"Total active jobs: {stats['total_jobs']}")
         logger.info(f"Jobs with missing info: {stats['missing_info']} ({stats['missing_percentage']:.1f}%)")
+        logger.info(f"Jobs processed by job_info scraper: {stats['processed_by_job_info']} ({stats['processed_percentage']:.1f}%)")
         logger.info("Missing fields breakdown:")
         for field, count in stats['missing_fields'].items():
             percentage = (count / stats['total_jobs'] * 100) if stats['total_jobs'] > 0 else 0
             logger.info(f"  {field}: {count} jobs ({percentage:.1f}%)")
         
-        # Process jobs with missing information
+        # Process jobs with missing information (prioritizing newest jobs)
         await scraper.process_jobs_with_missing_info(
             max_jobs=None,  # Set to a number for testing
-            delay=2.0  # 2 second delay between requests
+            delay=2.0,  # 2 second delay between requests
+            newest_first=True,  # Prioritize newest jobs
+            limit_newest=50  # Process only the newest 50 jobs (adjust as needed)
         )
         
         # Print final statistics
@@ -660,6 +595,7 @@ async def main():
         logger.info("=== FINAL STATISTICS ===")
         logger.info(f"Total active jobs: {final_stats['total_jobs']}")
         logger.info(f"Jobs with missing info: {final_stats['missing_info']} ({final_stats['missing_percentage']:.1f}%)")
+        logger.info(f"Jobs processed by job_info scraper: {final_stats['processed_by_job_info']} ({final_stats['processed_percentage']:.1f}%)")
         logger.info("Missing fields breakdown:")
         for field, count in final_stats['missing_fields'].items():
             percentage = (count / final_stats['total_jobs'] * 100) if final_stats['total_jobs'] > 0 else 0

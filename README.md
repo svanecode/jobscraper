@@ -77,16 +77,16 @@ python test_scraper_duplicates.py
 
 ```bash
 # Test with a small batch first
-python test_job_validator.py
+python tests/test_job_info_scraper.py
 
 # Run full validation (handles all jobs, not just first 1000)
-python job_validator.py
+python job_validator_github_actions_v2.py
 
 # Restore incorrectly deleted jobs
-python restore_jobs.py
+# (This functionality is now integrated into job_validator_github_actions_v2.py)
 
 # Check specific job validity
-python restore_jobs.py h1583150
+# (Use job_validator_github_actions_v2.py with specific job ID)
 ```
 
 ### 6. Score Jobs for CFO Interim Services (Optional)
@@ -96,7 +96,7 @@ python restore_jobs.py h1583150
 # Run the SQL in add_scoring_columns.sql in your Supabase SQL editor
 
 # Test scoring with a small sample
-python test_job_scorer.py
+python tests/score_10_jobs.py
 
 # Score all active unscored jobs
 python job_scorer.py
@@ -132,19 +132,19 @@ python playwright_scraper.py
 
 ```bash
 # Test validation with small batch
-python test_job_validator.py
+python tests/test_job_info_scraper.py
 
 # Run full validation (checks all jobs and soft deletes expired ones)
-python job_validator.py
+python job_validator_github_actions_v2.py
 
 # Restore incorrectly deleted jobs
-python restore_jobs.py
+# (This functionality is now integrated into job_validator_github_actions_v2.py)
 
 # Check specific job validity
-python restore_jobs.py h1583150
+# (Use job_validator_github_actions_v2.py with specific job ID)
 
 # Programmatic usage
-from job_validator import JobValidator
+from job_validator_github_actions_v2 import JobValidator
 
 validator = JobValidator()
 results = await validator.validate_jobs(batch_size=10, max_jobs=50)
@@ -201,7 +201,7 @@ The scraper creates:
 Test your Supabase setup:
 
 ```bash
-python test_supabase.py
+python tests/test_supabase_connection.py
 ```
 
 ### Test Job Validator
@@ -209,7 +209,7 @@ python test_supabase.py
 Test the job validation functionality:
 
 ```bash
-python test_job_validator.py
+python tests/test_job_info_scraper.py
 ```
 
 ## Configuration
@@ -270,7 +270,7 @@ Results saved to:
 1. **Supabase connection failed**
    - Check your credentials
    - Verify the table exists
-   - Run `python test_supabase.py`
+   - Run `python tests/test_supabase_connection.py`
 
 2. **No jobs found**
    - Website structure may have changed
@@ -284,7 +284,7 @@ Results saved to:
 4. **Job scoring errors**
    - Ensure `OPENAI_API_KEY` is set in environment
    - Check if scoring columns exist in database
-   - Run `python test_job_scorer.py` to test
+   - Run `python tests/score_10_jobs.py` to test
 
 ### Debug Mode
 

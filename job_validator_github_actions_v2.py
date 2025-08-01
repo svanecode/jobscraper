@@ -75,15 +75,32 @@ class GitHubActionsJobValidatorV2:
             # Get ALL jobs for validation, ordered by publication date (oldest first to check expired jobs first)
             logger.info("🔍 Fetching ALL jobs for validation, ordered by publication date (oldest first)")
             
-            # Query for ALL active jobs, ordered by publication date ascending (oldest first)
-            # Use range to get all jobs (Supabase has a default limit of 1000)
-            jobs_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date').range(0, total_active)
-            jobs_result = jobs_query.execute()
+            # Implement proper pagination to get ALL jobs
+            all_jobs = []
+            page_size = 1000  # Supabase default limit
+            offset = 0
             
-            jobs = jobs_result.data or []
-            logger.info(f"📥 Found {len(jobs)} jobs for validation (checking ALL jobs)")
+            while True:
+                # Query for active jobs with pagination
+                jobs_query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').order('publication_date').range(offset, offset + page_size - 1)
+                jobs_result = jobs_query.execute()
+                
+                batch_jobs = jobs_result.data or []
+                if not batch_jobs:
+                    break  # No more jobs to fetch
+                
+                all_jobs.extend(batch_jobs)
+                offset += page_size
+                
+                logger.debug(f"📥 Fetched batch: {len(batch_jobs)} jobs (offset: {offset - page_size})")
+                
+                # If we got fewer jobs than page_size, we've reached the end
+                if len(batch_jobs) < page_size:
+                    break
             
-            return jobs
+            logger.info(f"📥 Found {len(all_jobs)} jobs for validation (checking ALL jobs)")
+            
+            return all_jobs
                 
         except Exception as e:
             logger.error(f"❌ Error retrieving jobs from database: {e}")
