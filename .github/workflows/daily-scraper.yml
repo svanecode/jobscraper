@@ -93,7 +93,7 @@ jobs:
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
         echo "Starting job info scraper to fill missing information..."
-        python run_job_info_scraper.py --max-jobs 50 --delay 2.0
+        python tests/run_job_info_scraper.py --max-jobs 50 --delay 2.0
         echo "Job info scraper completed successfully"
         
     - name: Run AI job scorer
