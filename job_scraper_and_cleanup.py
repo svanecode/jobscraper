@@ -42,14 +42,14 @@ class JobScraperAndCleanup:
     Handles both scraping new jobs and cleaning up old ones in a single workflow.
     """
     
-    def __init__(self, supabase_url=None, supabase_key=None, cleanup_hours=48):
+    def __init__(self, supabase_url=None, supabase_key=None, cleanup_hours=12):
         """
         Initialize the combined scraper and cleanup utility
         
         Args:
             supabase_url: Supabase URL
             supabase_key: Supabase API key
-            cleanup_hours: Hours after which jobs should be cleaned up (default: 48)
+            cleanup_hours: Hours after which jobs should be cleaned up (default: 12)
         """
         self.base_url = "https://www.jobindex.dk"
         self.search_url = "https://www.jobindex.dk/jobsoegning/kontor"
