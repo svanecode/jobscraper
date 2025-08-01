@@ -136,7 +136,7 @@ class JobScraperAndCleanup:
                 has_more_pages = True
                 max_pages = None  # No limit - scrape all available pages
                 
-                while has_more_pages:
+                while has_more_pages and (max_pages is None or page_num <= max_pages):
                     logger.info(f"📄 Scraping page {page_num}")
                     
                     # Extract jobs from current page
@@ -164,13 +164,17 @@ class JobScraperAndCleanup:
                         page_num += 1
                         logger.info(f"Successfully navigated to page {page_num}")
                         
-
+                        # Check if we've reached the maximum pages
+                        if max_pages is not None and page_num > max_pages:
+                            logger.info(f"Reached maximum page limit ({max_pages}), stopping pagination")
+                            has_more_pages = False
                             
                     except Exception as e:
                         logger.warning(f"Failed to navigate to page {page_num + 1}: {e}")
                         has_more_pages = False
                 
                 logger.info(f"🎉 Scraping completed! Total jobs found: {total_jobs} across {page_num - 1} pages")
+                logger.info("⏳ Now proceeding to save jobs and update last_seen...")
                 return True
                 
             except Exception as e:
