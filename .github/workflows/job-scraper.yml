@@ -54,15 +54,15 @@ jobs:
         python playwright_scraper.py
         echo "Scraper completed successfully"
         
-    - name: Trigger AI job scorer
+    - name: Trigger job cleanup
       if: success()
       run: |
-        echo "Triggering AI job scorer workflow..."
+        echo "Triggering job cleanup workflow..."
         curl -X POST \
           -H "Accept: application/vnd.github.v3+json" \
           -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
           https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -d '{"event_type":"start-ai-scorer"}'
+          -d '{"event_type":"start-job-cleanup"}'
         
     - name: Send notification on success
       if: success()

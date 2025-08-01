@@ -398,8 +398,11 @@ class JobInfoScraper:
                         update_data[key] = value.strip()
             
             # Always add the job_info timestamp to mark this job as processed
+            # Also update last_seen to indicate this job was successfully accessed
             from datetime import datetime, timezone
-            update_data['job_info'] = datetime.now(timezone.utc).isoformat()
+            current_time = datetime.now(timezone.utc).isoformat()
+            update_data['job_info'] = current_time
+            update_data['last_seen'] = current_time
             
             if not update_data:
                 logger.warning(f"No valid data to update for job {job_id}")

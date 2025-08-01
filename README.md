@@ -51,7 +51,8 @@ CREATE TABLE jobs (
     publication_date DATE,
     description TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    deleted_at TIMESTAMP WITH TIME ZONE
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    last_seen TIMESTAMP WITH TIME ZONE
 );
 
 -- Create indexes for better performance
@@ -59,9 +60,10 @@ CREATE INDEX idx_jobs_job_id ON jobs(job_id);
 CREATE INDEX idx_jobs_company ON jobs(company);
 CREATE INDEX idx_jobs_publication_date ON jobs(publication_date);
 CREATE INDEX idx_jobs_deleted_at ON jobs(deleted_at);
+CREATE INDEX idx_jobs_last_seen ON jobs(last_seen);
 ```
 
-**Note:** If you already have a table without the `deleted_at` column, run the `add_deleted_at_column.sql` script to add it.
+**Note:** If you already have a table without the `deleted_at` or `last_seen` columns, run the `add_deleted_at_column.sql` and `add_last_seen_column.sql` scripts to add them.
 
 ### 4. Run the Scraper
 
@@ -73,20 +75,14 @@ python playwright_scraper.py
 python test_scraper_duplicates.py
 ```
 
-### 5. Validate and Clean Expired Jobs (Optional)
+### 5. Clean Up Old Jobs (Optional)
 
 ```bash
-# Test with a small batch first
-python tests/test_job_info_scraper.py
+# Run job cleanup based on last_seen timestamps
+python job_cleanup.py
 
-# Run full validation (handles all jobs, not just first 1000)
-python job_validator_github_actions_v2.py
-
-# Restore incorrectly deleted jobs
-# (This functionality is now integrated into job_validator_github_actions_v2.py)
-
-# Check specific job validity
-# (Use job_validator_github_actions_v2.py with specific job ID)
+# The cleanup utility automatically removes jobs that haven't been seen in 48 hours
+# This replaces the old validator that visited each job URL individually
 ```
 
 ### 6. Score Jobs for CFO Interim Services (Optional)
@@ -128,29 +124,20 @@ python playwright_scraper.py
 python playwright_scraper.py
 ```
 
-### Job Validation
+### Job Cleanup
 
 ```bash
-# Test validation with small batch
-python tests/test_job_info_scraper.py
+# Run job cleanup (replaces the old validator)
+python job_cleanup.py
 
-# Run full validation (checks all jobs and soft deletes expired ones)
-python job_validator_github_actions_v2.py
-
-# Restore incorrectly deleted jobs
-# (This functionality is now integrated into job_validator_github_actions_v2.py)
-
-# Check specific job validity
-# (Use job_validator_github_actions_v2.py with specific job ID)
+# The cleanup utility uses last_seen timestamps instead of visiting URLs
+# Jobs are automatically soft-deleted if not seen in 48 hours
 
 # Programmatic usage
-from job_validator_github_actions_v2 import JobValidator
+from job_cleanup import JobCleanup
 
-validator = JobValidator()
-results = await validator.validate_jobs(batch_size=10, max_jobs=50)
-
-# Restore specific jobs
-validator.restore_jobs_by_ids(['h1583150', 'h1583151'])
+cleanup = JobCleanup()
+cleanup.cleanup_old_jobs()
 ```
 
 ### Programmatic Usage
@@ -185,6 +172,7 @@ Each job listing includes:
 - `description` - Job description
 - `created_at` - Database timestamp (auto-generated)
 - `deleted_at` - Soft deletion timestamp (NULL = active job)
+- `last_seen` - Last time job was successfully accessed/scraped
 
 ## Output Files
 
@@ -204,12 +192,12 @@ Test your Supabase setup:
 python tests/test_supabase_connection.py
 ```
 
-### Test Job Validator
+### Test Job Cleanup
 
-Test the job validation functionality:
+Test the job cleanup functionality:
 
 ```bash
-python tests/test_job_info_scraper.py
+python job_cleanup.py
 ```
 
 ## Configuration

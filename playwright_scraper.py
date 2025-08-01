@@ -303,11 +303,34 @@ class JobindexPlaywrightScraper:
             else:
                 logger.info("No new jobs to insert - all jobs already exist in database")
             
+            # Update last_seen for existing jobs to indicate they were found during scraping
+            if existing_jobs:
+                self._update_last_seen_for_existing_jobs(existing_jobs)
+            
             return True
             
         except Exception as e:
             logger.error(f"Error saving to Supabase: {e}")
             return False
+    
+    def _update_last_seen_for_existing_jobs(self, existing_jobs):
+        """Update last_seen timestamp for existing jobs that were found during scraping"""
+        try:
+            from datetime import datetime, timezone
+            current_time = datetime.now(timezone.utc).isoformat()
+            
+            # Get job IDs of existing jobs
+            job_ids = [job['job_id'] for job in existing_jobs]
+            
+            # Update last_seen for all existing jobs
+            result = self.supabase.table('jobs').update({
+                'last_seen': current_time
+            }).in_('job_id', job_ids).execute()
+            
+            logger.info(f"Updated last_seen for {len(existing_jobs)} existing jobs")
+            
+        except Exception as e:
+            logger.error(f"Error updating last_seen for existing jobs: {e}")
     
     async def extract_jobs_from_page(self, page):
         """Extract job listings from the current page"""

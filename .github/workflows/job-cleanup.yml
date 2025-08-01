@@ -1,12 +1,12 @@
-name: Job Validator
+name: Job Cleanup
 
 on:
   workflow_dispatch:  # Allow manual triggering
   repository_dispatch:
-    types: [start-job-validator]
+    types: [start-job-cleanup]
 
 jobs:
-  validate-jobs:
+  cleanup-jobs:
     runs-on: ubuntu-latest
     
     steps:
@@ -40,46 +40,46 @@ jobs:
           echo "SUPABASE_ANON_KEY is configured"
         fi
         
-    - name: Run job validator (oldest jobs first)
+    - name: Run job cleanup
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
-        echo "Starting GitHub Actions V2 job validation with fallback strategies..."
-        python job_validator_github_actions_v2.py
-        echo "Job validation completed successfully"
+        echo "Starting job cleanup based on last_seen timestamps..."
+        python job_cleanup.py
+        echo "Job cleanup completed successfully"
         
-    - name: Check validator results
+    - name: Check cleanup results
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
-        echo "Checking validator results..."
+        echo "Checking cleanup results..."
         python -c "
-        from job_validator_github_actions_v2 import GitHubActionsJobValidatorV2
-        validator = GitHubActionsJobValidatorV2()
-        stats = validator.get_deletion_stats()
-        print(f'Validator Results: {stats}')
+        from job_cleanup import JobCleanup
+        cleanup = JobCleanup()
+        stats = cleanup.get_cleanup_stats()
+        print(f'Cleanup Results: {stats}')
         "
         
-    - name: Trigger job scraper
+    - name: Trigger AI job scorer
       if: success()
       run: |
-        echo "Triggering job scraper workflow..."
+        echo "Triggering AI job scorer workflow..."
         curl -X POST \
           -H "Accept: application/vnd.github.v3+json" \
           -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
           https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -d '{"event_type":"start-job-scraper"}'
+          -d '{"event_type":"start-ai-scorer"}'
         
     - name: Send notification on success
       if: success()
       run: |
-        echo "✅ Job validation completed successfully!"
-        echo "📊 Expired jobs cleaned up"
+        echo "✅ Job cleanup completed successfully!"
+        echo "📊 Old jobs cleaned up based on last_seen timestamps"
         
     - name: Send notification on failure
       if: failure()
       run: |
-        echo "❌ Job validation failed!"
+        echo "❌ Job cleanup failed!"
         echo "Please check the logs for details" 
