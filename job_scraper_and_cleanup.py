@@ -145,6 +145,10 @@ class JobScraperAndCleanup:
                         self.jobs.extend(page_jobs)
                         total_jobs += len(page_jobs)
                         logger.info(f"Found {len(page_jobs)} jobs on page {page_num}")
+                        
+                        # Update last_seen for jobs from this page in real-time
+                        self._update_last_seen_for_all_jobs(page_jobs)
+                        logger.info(f"✅ Updated last_seen for {len(page_jobs)} jobs from page {page_num}")
                     else:
                         logger.warning(f"No jobs found on page {page_num}")
                         break  # No jobs on current page, stop
@@ -354,9 +358,8 @@ class JobScraperAndCleanup:
             else:
                 logger.info("ℹ️ No new jobs to insert - all jobs already exist in database")
             
-            # Update last_seen for ALL jobs found during scraping (new, existing, and soft deleted)
-            if self.jobs:
-                self._update_last_seen_for_all_jobs(self.jobs)
+            # Note: last_seen is already updated in real-time during scraping
+            # No need to update again here
             
             return True
             
