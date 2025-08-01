@@ -251,6 +251,10 @@ class JobindexPlaywrightScraper:
                 result = self.supabase.table(table_name).insert(jobs_data).execute()
                 logger.info(f"Successfully inserted {len(new_jobs)} new jobs to Supabase")
             
+            # Update last_seen for existing jobs to indicate they were found during scraping
+            if existing_jobs:
+                self._update_last_seen_for_existing_jobs(existing_jobs)
+            
             return len(new_jobs), len(existing_jobs)
             
         except Exception as e:
