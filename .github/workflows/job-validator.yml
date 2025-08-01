@@ -1,10 +1,6 @@
 name: Job Validator
 
 on:
-  schedule:
-    # Run daily at 5:00 AM Danish time (CET/CEST)
-    # This is 3:00 AM UTC in winter (CET) and 4:00 AM UTC in summer (CEST)
-    - cron: '0 3 * * *'
   workflow_dispatch:  # Allow manual triggering
   repository_dispatch:
     types: [start-job-validator]
