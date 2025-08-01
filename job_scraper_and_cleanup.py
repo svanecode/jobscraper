@@ -134,9 +134,9 @@ class JobScraperAndCleanup:
                 total_jobs = 0
                 page_num = 1
                 has_more_pages = True
-                max_pages = 20  # Safety limit to prevent infinite loops
+                max_pages = None  # No limit - scrape all available pages
                 
-                while has_more_pages and page_num <= max_pages:
+                while has_more_pages:
                     logger.info(f"📄 Scraping page {page_num}")
                     
                     # Extract jobs from current page
@@ -164,10 +164,7 @@ class JobScraperAndCleanup:
                         page_num += 1
                         logger.info(f"Successfully navigated to page {page_num}")
                         
-                        # Check if we've reached the maximum pages
-                        if page_num > max_pages:
-                            logger.info(f"Reached maximum page limit ({max_pages}), stopping pagination")
-                            has_more_pages = False
+
                             
                     except Exception as e:
                         logger.warning(f"Failed to navigate to page {page_num + 1}: {e}")
@@ -353,9 +350,9 @@ class JobScraperAndCleanup:
             else:
                 logger.info("ℹ️ No new jobs to insert - all jobs already exist in database")
             
-            # Update last_seen for existing jobs to indicate they were found during scraping
-            if existing_jobs:
-                self._update_last_seen_for_existing_jobs(existing_jobs)
+            # Update last_seen for ALL jobs found during scraping (new, existing, and soft deleted)
+            if self.jobs:
+                self._update_last_seen_for_all_jobs(self.jobs)
             
             return True
             
@@ -363,24 +360,24 @@ class JobScraperAndCleanup:
             logger.error(f"Error saving to Supabase: {e}")
             return False
     
-    def _update_last_seen_for_existing_jobs(self, existing_jobs):
-        """Update last_seen timestamp for existing jobs that were found during scraping"""
+    def _update_last_seen_for_all_jobs(self, jobs):
+        """Update last_seen timestamp for ALL jobs found during scraping (new, existing, and soft deleted)"""
         try:
             from datetime import datetime, timezone
             current_time = datetime.now(timezone.utc).isoformat()
             
-            # Get job IDs of existing jobs
-            job_ids = [job['job_id'] for job in existing_jobs]
+            # Get job IDs of all jobs found during scraping
+            job_ids = [job['job_id'] for job in jobs]
             
-            # Update last_seen for all existing jobs
+            # Update last_seen for ALL jobs (including soft deleted ones)
             result = self.supabase.table('jobs').update({
                 'last_seen': current_time
             }).in_('job_id', job_ids).execute()
             
-            logger.info(f"🔄 Updated last_seen for {len(existing_jobs)} existing jobs")
+            logger.info(f"🔄 Updated last_seen for {len(jobs)} jobs (including soft deleted)")
             
         except Exception as e:
-            logger.error(f"Error updating last_seen for existing jobs: {e}")
+            logger.error(f"Error updating last_seen for all jobs: {e}")
     
     def get_old_jobs(self):
         """Get jobs that haven't been seen in the specified number of hours"""
