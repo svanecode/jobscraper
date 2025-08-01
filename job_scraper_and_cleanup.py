@@ -68,7 +68,7 @@ class JobScraperAndCleanup:
             logger.error("❌ Supabase credentials not provided")
             raise ValueError("Supabase credentials required")
     
-    async def scrape_jobs(self, max_pages=3):
+    async def scrape_jobs(self):
         """Scrape job listings using Playwright with pagination and duplicate detection"""
         async with async_playwright() as p:
             # Launch browser with better settings
@@ -130,10 +130,13 @@ class JobScraperAndCleanup:
                     logger.error("All navigation strategies failed")
                     return False
                 
-                # Scrape jobs from multiple pages
+                # Scrape jobs from all available pages
                 total_jobs = 0
-                for page_num in range(1, max_pages + 1):
-                    logger.info(f"📄 Scraping page {page_num}/{max_pages}")
+                page_num = 1
+                has_more_pages = True
+                
+                while has_more_pages:
+                    logger.info(f"📄 Scraping page {page_num}")
                     
                     # Extract jobs from current page
                     page_jobs = await self.extract_jobs_from_page(page)
@@ -144,23 +147,46 @@ class JobScraperAndCleanup:
                     else:
                         logger.warning(f"No jobs found on page {page_num}")
                     
-                    # Try to go to next page if not on last page
-                    if page_num < max_pages:
-                        try:
-                            # Look for next page button
-                            next_button = await page.query_selector('a[aria-label="Næste"]')
+                    # Check if there's a next page
+                    try:
+                        # Look for next page button - try multiple selectors
+                        next_button_selectors = [
+                            'a[aria-label="Næste"]',
+                            'a[aria-label="Next"]',
+                            '.pagination .next a',
+                            '.pagination a[rel="next"]',
+                            'a[data-testid="next-page"]',
+                            '.next-page',
+                            'a:has-text("Næste")',
+                            'a:has-text("Next")'
+                        ]
+                        
+                        next_button = None
+                        for selector in next_button_selectors:
+                            next_button = await page.query_selector(selector)
                             if next_button:
-                                await next_button.click()
-                                await page.wait_for_load_state('domcontentloaded', timeout=5000)
-                                logger.info(f"Navigated to page {page_num + 1}")
-                            else:
-                                logger.info("No next page button found, stopping pagination")
-                                break
-                        except Exception as e:
-                            logger.warning(f"Failed to navigate to next page: {e}")
-                            break
+                                # Check if the button is enabled/clickable
+                                is_disabled = await next_button.get_attribute('disabled') or await next_button.get_attribute('aria-disabled')
+                                if not is_disabled:
+                                    break
+                                else:
+                                    next_button = None
+                        
+                        if next_button:
+                            # Click the next button
+                            await next_button.click()
+                            await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                            page_num += 1
+                            logger.info(f"Navigated to page {page_num}")
+                        else:
+                            logger.info("No next page button found or reached last page, stopping pagination")
+                            has_more_pages = False
+                            
+                    except Exception as e:
+                        logger.warning(f"Failed to navigate to next page: {e}")
+                        has_more_pages = False
                 
-                logger.info(f"🎉 Scraping completed! Total jobs found: {total_jobs}")
+                logger.info(f"🎉 Scraping completed! Total jobs found: {total_jobs} across {page_num} pages")
                 return True
                 
             except Exception as e:
@@ -502,7 +528,7 @@ async def main():
         
         # Step 1: Scrape jobs
         logger.info("📥 STEP 1: Scraping jobs from Jobindex")
-        scraping_success = await scraper_cleanup.scrape_jobs(max_pages=3)
+        scraping_success = await scraper_cleanup.scrape_jobs()
         
         if scraping_success:
             # Step 2: Save jobs to database and update last_seen

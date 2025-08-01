@@ -30,6 +30,15 @@ jobs:
       run: |
         pip install -r requirements.txt
         
+    - name: Install GitHub CLI
+      run: |
+        type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+        && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+        && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+        && sudo apt update \
+        && sudo apt install gh -y
+        
     - name: Check environment setup
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -79,9 +88,25 @@ jobs:
         echo "Repository: ${{ github.repository }}"
         echo "Event type: start-ai-scorer"
         
+        # Try using GitHub CLI first (more reliable)
+        if command -v gh &> /dev/null; then
+          echo "Using GitHub CLI to trigger workflow..."
+          gh workflow run ai-job-scorer.yml
+          if [ $? -eq 0 ]; then
+            echo "✅ AI job scorer workflow triggered successfully via GitHub CLI"
+            exit 0
+          else
+            echo "❌ GitHub CLI failed, trying curl method..."
+          fi
+        fi
+        
+        # Fallback to curl method
+        # Use PAT_TOKEN if available, otherwise fall back to GITHUB_TOKEN
+        TOKEN="${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}"
+        
         response=$(curl -X POST \
           -H "Accept: application/vnd.github.v3+json" \
-          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          -H "Authorization: token $TOKEN" \
           https://api.github.com/repos/${{ github.repository }}/dispatches \
           -d '{"event_type":"start-ai-scorer"}' \
           -w "\nHTTP Status: %{http_code}\n")
@@ -93,6 +118,7 @@ jobs:
         else
           echo "❌ Failed to trigger AI job scorer workflow"
           echo "Response: $response"
+          echo "Note: If using GITHUB_TOKEN, you may need to create a Personal Access Token with 'repo' scope"
         fi
         
     - name: Send notification on success
