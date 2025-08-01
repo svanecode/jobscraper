@@ -483,8 +483,8 @@ class JobScraperAndCleanup:
         except Exception as e:
             logger.error(f"Error updating last_seen for all jobs: {e}")
     
-    def get_old_jobs(self):
-        """Get jobs that haven't been seen in the specified number of hours"""
+    def get_old_jobs(self, batch_size=1000):
+        """Get jobs that haven't been seen in the specified number of hours (with batching to handle Supabase 1000 limit)"""
         try:
             # Calculate the cutoff time
             cutoff_time = datetime.now() - timedelta(hours=self.cleanup_hours)
@@ -492,13 +492,29 @@ class JobScraperAndCleanup:
             
             logger.info(f"🔍 Looking for jobs not seen since {cutoff_iso} ({self.cleanup_hours} hours ago)")
             
-            # Get jobs that are active (not deleted) and haven't been seen recently
-            response = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').lt('last_seen', cutoff_iso).execute()
+            all_old_jobs = []
+            offset = 0
             
-            old_jobs = response.data or []
-            logger.info(f"📊 Found {len(old_jobs)} jobs to clean up")
+            while True:
+                # Get batch of jobs that are active (not deleted) and haven't been seen recently
+                response = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').lt('last_seen', cutoff_iso).range(offset, offset + batch_size - 1).execute()
+                
+                batch_jobs = response.data or []
+                
+                if not batch_jobs:
+                    break  # No more jobs to fetch
+                
+                all_old_jobs.extend(batch_jobs)
+                logger.info(f"📦 Fetched batch {len(batch_jobs)} jobs (offset: {offset})")
+                
+                if len(batch_jobs) < batch_size:
+                    break  # Last batch (less than batch_size)
+                
+                offset += batch_size
             
-            return old_jobs
+            logger.info(f"📊 Found {len(all_old_jobs)} total jobs to clean up (across {offset//batch_size + 1} batches)")
+            
+            return all_old_jobs
             
         except Exception as e:
             logger.error(f"❌ Error retrieving old jobs: {e}")
@@ -522,10 +538,10 @@ class JobScraperAndCleanup:
             logger.error(f"❌ Error soft deleting job {job_id}: {e}")
             return False
     
-    def cleanup_old_jobs(self):
-        """Clean up old jobs by soft-deleting them"""
-        # Get old jobs
-        old_jobs = self.get_old_jobs()
+    def cleanup_old_jobs(self, batch_size=1000, process_chunk_size=100):
+        """Clean up old jobs by soft-deleting them (with batching and chunked processing)"""
+        # Get old jobs with batching
+        old_jobs = self.get_old_jobs(batch_size=batch_size)
         
         if not old_jobs:
             logger.info("ℹ️ No old jobs found to clean up")
@@ -535,22 +551,38 @@ class JobScraperAndCleanup:
                 "errors": 0
             }
         
-        logger.info(f"🧹 Starting cleanup of {len(old_jobs)} old jobs")
+        logger.info(f"🧹 Starting cleanup of {len(old_jobs)} old jobs (processing in chunks of {process_chunk_size})")
         
         total_deleted = 0
         total_errors = 0
         
-        for job in old_jobs:
-            job_id = job.get('job_id')
-            title = job.get('title', 'Unknown')
-            last_seen = job.get('last_seen', 'Unknown')
+        # Process jobs in chunks for better progress tracking
+        for i in range(0, len(old_jobs), process_chunk_size):
+            chunk = old_jobs[i:i + process_chunk_size]
+            chunk_num = (i // process_chunk_size) + 1
+            total_chunks = (len(old_jobs) + process_chunk_size - 1) // process_chunk_size
             
-            logger.info(f"🗑️ Cleaning up job: {title} ({job_id}) - Last seen: {last_seen}")
+            logger.info(f"📦 Processing chunk {chunk_num}/{total_chunks} ({len(chunk)} jobs)")
             
-            if self.soft_delete_job(job_id):
-                total_deleted += 1
-            else:
-                total_errors += 1
+            chunk_deleted = 0
+            chunk_errors = 0
+            
+            for job in chunk:
+                job_id = job.get('job_id')
+                title = job.get('title', 'Unknown')
+                last_seen = job.get('last_seen', 'Unknown')
+                
+                logger.info(f"🗑️ Cleaning up job: {title} ({job_id}) - Last seen: {last_seen}")
+                
+                if self.soft_delete_job(job_id):
+                    chunk_deleted += 1
+                else:
+                    chunk_errors += 1
+            
+            total_deleted += chunk_deleted
+            total_errors += chunk_errors
+            
+            logger.info(f"✅ Chunk {chunk_num}/{total_chunks} complete: {chunk_deleted} deleted, {chunk_errors} errors")
         
         # Final summary
         logger.info("🎉 CLEANUP COMPLETE")
