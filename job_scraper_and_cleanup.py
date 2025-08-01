@@ -79,12 +79,39 @@ class JobScraperAndCleanup:
                     '--disable-dev-shm-usage',
                     '--disable-gpu',
                     '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor'
+                    '--disable-features=VizDisplayCompositor',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding',
+                    '--disable-background-networking',
+                    '--disable-default-apps',
+                    '--disable-extensions',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--hide-scrollbars',
+                    '--mute-audio',
+                    '--no-first-run',
+                    '--safebrowsing-disable-auto-update',
+                    '--ignore-certificate-errors',
+                    '--ignore-ssl-errors',
+                    '--ignore-certificate-errors-spki-list',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-zygote',
+                    '--single-process'
                 ]
             )
             context = await browser.new_context(
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                viewport={'width': 1920, 'height': 1080}
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
             )
             page = await context.new_page()
             
@@ -97,8 +124,8 @@ class JobScraperAndCleanup:
                 # Strategy 1: Try with domcontentloaded (faster)
                 try:
                     logger.info("Attempting navigation with domcontentloaded...")
-                    await page.goto(self.search_url, wait_until='domcontentloaded', timeout=15000)
-                    await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                    await page.goto(self.search_url, wait_until='domcontentloaded', timeout=30000)
+                    await page.wait_for_load_state('domcontentloaded', timeout=10000)
                     navigation_success = True
                     logger.info("Navigation successful with domcontentloaded")
                 except Exception as e:
@@ -108,8 +135,8 @@ class JobScraperAndCleanup:
                 if not navigation_success:
                     try:
                         logger.info("Attempting navigation with load...")
-                        await page.goto(self.search_url, wait_until='load', timeout=20000)
-                        await page.wait_for_load_state('load', timeout=5000)
+                        await page.goto(self.search_url, wait_until='load', timeout=45000)
+                        await page.wait_for_load_state('load', timeout=10000)
                         navigation_success = True
                         logger.info("Navigation successful with load")
                     except Exception as e:
@@ -119,12 +146,23 @@ class JobScraperAndCleanup:
                 if not navigation_success:
                     try:
                         logger.info("Attempting navigation without wait_until...")
-                        await page.goto(self.search_url, timeout=25000)
-                        await asyncio.sleep(3)  # Wait a bit for page to load
+                        await page.goto(self.search_url, timeout=60000)
+                        await asyncio.sleep(5)  # Wait longer for page to load
                         navigation_success = True
                         logger.info("Navigation successful without wait_until")
                     except Exception as e:
                         logger.warning(f"navigation without wait_until failed: {e}")
+                
+                # Strategy 4: Try with networkidle (most reliable for slow connections)
+                if not navigation_success:
+                    try:
+                        logger.info("Attempting navigation with networkidle...")
+                        await page.goto(self.search_url, wait_until='networkidle', timeout=90000)
+                        await asyncio.sleep(3)
+                        navigation_success = True
+                        logger.info("Navigation successful with networkidle")
+                    except Exception as e:
+                        logger.warning(f"networkidle navigation failed: {e}")
                 
                 if not navigation_success:
                     logger.error("All navigation strategies failed")
@@ -158,9 +196,9 @@ class JobScraperAndCleanup:
                         next_url = f"{self.search_url}?page={page_num + 1}"
                         logger.info(f"Attempting to navigate to: {next_url}")
                         
-                        # Navigate to next page
-                        await page.goto(next_url, wait_until='domcontentloaded', timeout=15000)
-                        await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                        # Navigate to next page with robust timeout
+                        await page.goto(next_url, wait_until='domcontentloaded', timeout=30000)
+                        await page.wait_for_load_state('domcontentloaded', timeout=10000)
                         
                         # Small delay between pages to be respectful
                         await asyncio.sleep(1)
@@ -521,8 +559,8 @@ async def main():
         logger.info("📥 STEP 1: Scraping jobs from Jobindex")
         scraping_success = await scraper_cleanup.scrape_jobs()
         
-        if scraping_success:
-            # Step 2: Save jobs to database and update last_seen
+        # Step 2: Save jobs to database and update last_seen (even if scraping failed partially)
+        if len(scraper_cleanup.jobs) > 0:
             logger.info("💾 STEP 2: Saving jobs to database")
             saving_success = scraper_cleanup.save_jobs_to_supabase()
             
@@ -546,7 +584,9 @@ async def main():
             else:
                 logger.error("❌ Failed to save jobs to database")
         else:
-            logger.error("❌ Failed to scrape jobs")
+            logger.warning("⚠️ No jobs scraped, skipping save and cleanup steps")
+            if not scraping_success:
+                logger.error("❌ Failed to scrape jobs")
         
     except Exception as e:
         logger.error(f"❌ Error in main: {e}")
