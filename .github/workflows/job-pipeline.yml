@@ -1,12 +1,14 @@
-name: AI Job Scorer
+name: Job Pipeline (Scrape, Cleanup, Info & Score)
 
 on:
   workflow_dispatch:  # Allow manual triggering
-  repository_dispatch:
-    types: [start-ai-scorer]
+  schedule:
+    # Run daily at 5:00 AM Danish time (CET/CEST)
+    # This is 3:00 AM UTC in winter (CET) and 4:00 AM UTC in summer (CEST)
+    - cron: '0 3 * * *'
 
 jobs:
-  score-jobs:
+  scrape-cleanup-and-score:
     runs-on: ubuntu-latest
     
     steps:
@@ -18,9 +20,14 @@ jobs:
       with:
         python-version: '3.9'
         
-    - name: Install dependencies
+    - name: Install Playwright
       run: |
         python -m pip install --upgrade pip
+        pip install playwright
+        playwright install chromium
+        
+    - name: Install dependencies
+      run: |
         pip install -r requirements.txt
         # Install OpenAI for AI scoring
         pip install openai
@@ -48,6 +55,24 @@ jobs:
           echo "OPENAI_API_KEY is configured"
         fi
         
+    - name: Run scraper and cleanup
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        echo "Starting combined job scraper and cleanup..."
+        python job_scraper_and_cleanup.py
+        echo "Combined scraper and cleanup completed successfully"
+        
+    - name: Run job info scraper
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        echo "Starting job info scraper to fill missing company information..."
+        python job_info_scraper.py
+        echo "Job info scraper completed successfully"
+        
     - name: Run AI job scorer
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -62,7 +87,7 @@ jobs:
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: scorer-results
+        name: pipeline-results
         path: |
           *.json
           *.csv
@@ -71,11 +96,11 @@ jobs:
     - name: Send notification on success
       if: success()
       run: |
-        echo "✅ AI job scoring completed successfully!"
-        echo "📊 Jobs scored for CFO services"
+        echo "✅ Job pipeline completed successfully!"
+        echo "📊 Jobs scraped, cleaned up, info filled, and scored for CFO services"
         
     - name: Send notification on failure
       if: failure()
       run: |
-        echo "❌ AI job scoring failed!"
+        echo "❌ Job pipeline failed!"
         echo "Please check the logs for details" 

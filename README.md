@@ -193,20 +193,18 @@ Test the combined scraper and cleanup functionality:
 python job_scraper_and_cleanup.py
 ```
 
-## GitHub Actions Workflows
+## GitHub Actions Workflow
 
-The project uses two automated workflows:
+The project uses a single automated workflow that handles the complete job processing pipeline:
 
-### 1. Job Scraper and Cleanup (`scraper-and-cleanup.yml`)
+### Job Pipeline (`job-pipeline.yml`)
 - **Schedule**: Daily at 5:00 AM Danish time
 - **Manual trigger**: Available via GitHub Actions UI
-- **Function**: Scrapes new jobs and cleans up old ones
-- **Triggers**: AI Job Scorer workflow on success
-
-### 2. AI Job Scorer (`ai-job-scorer.yml`)
-- **Trigger**: Called by Scraper and Cleanup workflow
-- **Manual trigger**: Available via GitHub Actions UI
-- **Function**: Scores jobs for CFO services using AI
+- **Function**: 
+  1. Scrapes new jobs and cleans up old ones
+  2. Fills missing company information from job URLs
+  3. Scores jobs for CFO services using AI
+- **Benefits**: Simplified workflow, better error handling, and sequential execution
 
 ## Configuration
 
