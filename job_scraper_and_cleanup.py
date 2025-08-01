@@ -389,12 +389,18 @@ class JobScraperAndCleanup:
             logger.info(f"📊 Job analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs")
             
             if new_jobs:
-                # Prepare data for Supabase (remove scraped_at timestamp as it will be set by database)
+                # Prepare data for Supabase (set created_at and last_seen for new jobs)
                 jobs_data = []
+                from datetime import datetime, timezone
+                current_time = datetime.now(timezone.utc).isoformat()
+                
                 for job in new_jobs:
                     job_data = job.copy()
                     # Remove scraped_at as it will be handled by database
                     job_data.pop('scraped_at', None)
+                    # Set created_at and last_seen for new jobs
+                    job_data['created_at'] = current_time
+                    job_data['last_seen'] = current_time
                     jobs_data.append(job_data)
                 
                 # Insert only new jobs
@@ -444,12 +450,18 @@ class JobScraperAndCleanup:
             logger.info(f"📄 Page analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs")
             
             if new_jobs:
-                # Prepare data for Supabase (remove scraped_at timestamp as it will be set by database)
+                # Prepare data for Supabase (set created_at and last_seen for new jobs)
                 jobs_data = []
+                from datetime import datetime, timezone
+                current_time = datetime.now(timezone.utc).isoformat()
+                
                 for job in new_jobs:
                     job_data = job.copy()
                     # Remove scraped_at as it will be handled by database
                     job_data.pop('scraped_at', None)
+                    # Set created_at and last_seen for new jobs
+                    job_data['created_at'] = current_time
+                    job_data['last_seen'] = current_time
                     jobs_data.append(job_data)
                 
                 # Insert only new jobs from this page
@@ -465,7 +477,7 @@ class JobScraperAndCleanup:
             return False
     
     def _update_last_seen_for_all_jobs(self, jobs):
-        """Update last_seen timestamp for ALL jobs found during scraping (new, existing, and soft deleted)"""
+        """Update last_seen timestamp for existing jobs found during scraping (new jobs already have last_seen set)"""
         try:
             from datetime import datetime, timezone
             current_time = datetime.now(timezone.utc).isoformat()
@@ -473,15 +485,15 @@ class JobScraperAndCleanup:
             # Get job IDs of all jobs found during scraping
             job_ids = [job['job_id'] for job in jobs]
             
-            # Update last_seen for ALL jobs (including soft deleted ones)
+            # Update last_seen for existing jobs (new jobs already have last_seen set during insertion)
             result = self.supabase.table('jobs').update({
                 'last_seen': current_time
             }).in_('job_id', job_ids).execute()
             
-            logger.info(f"🔄 Updated last_seen for {len(jobs)} jobs (including soft deleted)")
+            logger.info(f"🔄 Updated last_seen for {len(jobs)} existing jobs")
             
         except Exception as e:
-            logger.error(f"Error updating last_seen for all jobs: {e}")
+            logger.error(f"Error updating last_seen for existing jobs: {e}")
     
     def get_old_jobs(self, batch_size=1000):
         """Get jobs that haven't been seen in the specified number of hours (with batching to handle Supabase 1000 limit)"""
