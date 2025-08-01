@@ -75,14 +75,14 @@ python playwright_scraper.py
 python test_scraper_duplicates.py
 ```
 
-### 5. Clean Up Old Jobs (Optional)
+### 5. Scrape and Clean Up Jobs (Optional)
 
 ```bash
-# Run job cleanup based on last_seen timestamps
-python job_cleanup.py
+# Run combined scraper and cleanup
+python job_scraper_and_cleanup.py
 
-# The cleanup utility automatically removes jobs that haven't been seen in 48 hours
-# This replaces the old validator that visited each job URL individually
+# This script scrapes new jobs and cleans up old ones in a single workflow
+# Old jobs are automatically removed if they haven't been seen in 48 hours
 ```
 
 ### 6. Score Jobs for CFO Interim Services (Optional)
@@ -124,20 +124,22 @@ python playwright_scraper.py
 python playwright_scraper.py
 ```
 
-### Job Cleanup
+### Job Scraper and Cleanup
 
 ```bash
-# Run job cleanup (replaces the old validator)
-python job_cleanup.py
+# Run combined scraper and cleanup
+python job_scraper_and_cleanup.py
 
-# The cleanup utility uses last_seen timestamps instead of visiting URLs
-# Jobs are automatically soft-deleted if not seen in 48 hours
+# This script scrapes new jobs and cleans up old ones in a single workflow
+# Only the playwright scraper updates last_seen when finding existing jobs
 
 # Programmatic usage
-from job_cleanup import JobCleanup
+from job_scraper_and_cleanup import JobScraperAndCleanup
 
-cleanup = JobCleanup()
-cleanup.cleanup_old_jobs()
+scraper_cleanup = JobScraperAndCleanup()
+await scraper_cleanup.scrape_jobs()
+scraper_cleanup.save_jobs_to_supabase()
+scraper_cleanup.cleanup_old_jobs()
 ```
 
 ### Programmatic Usage
@@ -192,12 +194,12 @@ Test your Supabase setup:
 python tests/test_supabase_connection.py
 ```
 
-### Test Job Cleanup
+### Test Job Scraper and Cleanup
 
-Test the job cleanup functionality:
+Test the combined scraper and cleanup functionality:
 
 ```bash
-python job_cleanup.py
+python job_scraper_and_cleanup.py
 ```
 
 ## Configuration

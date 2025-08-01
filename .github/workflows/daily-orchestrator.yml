@@ -25,4 +25,4 @@ jobs:
     - name: Send notification
       run: |
         echo "🚀 Daily job processing chain initiated!"
-        echo "📋 Workflow order: Scraper → Cleanup → AI Scorer" 
+        echo "📋 Workflow order: Scraper & Cleanup → AI Scorer" 

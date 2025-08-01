@@ -45,30 +45,30 @@ jobs:
           echo "SUPABASE_ANON_KEY is configured"
         fi
         
-    - name: Run scraper
+    - name: Run scraper and cleanup
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       run: |
-        echo "Starting Jobindex scraper..."
-        python playwright_scraper.py
-        echo "Scraper completed successfully"
+        echo "Starting combined job scraper and cleanup..."
+        python job_scraper_and_cleanup.py
+        echo "Combined scraper and cleanup completed successfully"
         
-    - name: Trigger job cleanup
+    - name: Trigger AI job scorer
       if: success()
       run: |
-        echo "Triggering job cleanup workflow..."
+        echo "Triggering AI job scorer workflow..."
         curl -X POST \
           -H "Accept: application/vnd.github.v3+json" \
           -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
           https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -d '{"event_type":"start-job-cleanup"}'
+          -d '{"event_type":"start-ai-scorer"}'
         
     - name: Send notification on success
       if: success()
       run: |
-        echo "✅ Job scraper completed successfully!"
-        echo "📊 New jobs scraped"
+        echo "✅ Combined scraper and cleanup completed successfully!"
+        echo "📊 New jobs scraped and old jobs cleaned up"
         
     - name: Send notification on failure
       if: failure()
