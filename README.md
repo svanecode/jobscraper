@@ -65,27 +65,18 @@ CREATE INDEX idx_jobs_last_seen ON jobs(last_seen);
 
 **Note:** If you already have a table without the `deleted_at` or `last_seen` columns, run the `add_deleted_at_column.sql` and `add_last_seen_column.sql` scripts to add them.
 
-### 4. Run the Scraper
+### 4. Run the Combined Scraper and Cleanup
 
 ```bash
-# Run the full scraper
-python playwright_scraper.py
-
-# Test duplicate detection with limited pages
-python test_scraper_duplicates.py
-```
-
-### 5. Scrape and Clean Up Jobs (Optional)
-
-```bash
-# Run combined scraper and cleanup
+# Run the combined scraper and cleanup
 python job_scraper_and_cleanup.py
 
 # This script scrapes new jobs and cleans up old ones in a single workflow
-# Old jobs are automatically removed if they haven't been seen in 48 hours
 ```
 
-### 6. Score Jobs for CFO Interim Services (Optional)
+
+
+### 5. Score Jobs for CFO Interim Services (Optional)
 
 ```bash
 # First, add scoring columns to database
@@ -194,13 +185,28 @@ Test your Supabase setup:
 python tests/test_supabase_connection.py
 ```
 
-### Test Job Scraper and Cleanup
+### Test Combined Scraper and Cleanup
 
 Test the combined scraper and cleanup functionality:
 
 ```bash
 python job_scraper_and_cleanup.py
 ```
+
+## GitHub Actions Workflows
+
+The project uses two automated workflows:
+
+### 1. Job Scraper and Cleanup (`scraper-and-cleanup.yml`)
+- **Schedule**: Daily at 5:00 AM Danish time
+- **Manual trigger**: Available via GitHub Actions UI
+- **Function**: Scrapes new jobs and cleans up old ones
+- **Triggers**: AI Job Scorer workflow on success
+
+### 2. AI Job Scorer (`ai-job-scorer.yml`)
+- **Trigger**: Called by Scraper and Cleanup workflow
+- **Manual trigger**: Available via GitHub Actions UI
+- **Function**: Scores jobs for CFO services using AI
 
 ## Configuration
 

@@ -1,12 +1,14 @@
-name: Job Scraper
+name: Job Scraper and Cleanup
 
 on:
   workflow_dispatch:  # Allow manual triggering
-  repository_dispatch:
-    types: [start-job-scraper]
+  schedule:
+    # Run daily at 5:00 AM Danish time (CET/CEST)
+    # This is 3:00 AM UTC in winter (CET) and 4:00 AM UTC in summer (CEST)
+    - cron: '0 3 * * *'
 
 jobs:
-  scrape-jobs:
+  scrape-and-cleanup:
     runs-on: ubuntu-latest
     
     steps:
@@ -73,5 +75,5 @@ jobs:
     - name: Send notification on failure
       if: failure()
       run: |
-        echo "❌ Job scraper failed!"
+        echo "❌ Combined scraper and cleanup failed!"
         echo "Please check the logs for details" 
