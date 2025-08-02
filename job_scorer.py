@@ -394,7 +394,11 @@ Beskrivelse: {job.get('description', 'N/A')}"""
             response = self.supabase.table('jobs').select('cfo_score').not_.is_('cfo_score', 'null').execute()
             
             if not response.data:
-                return {"total_scored": 0, "distribution": {}}
+                return {
+                    "total_scored": 0, 
+                    "distribution": {},
+                    "average_score": 0
+                }
             
             scores = [job['cfo_score'] for job in response.data]
             distribution = {0: 0, 1: 0, 2: 0, 3: 0}
@@ -411,7 +415,11 @@ Beskrivelse: {job.get('description', 'N/A')}"""
             
         except Exception as e:
             logger.error(f"Error getting scoring stats: {e}")
-            return {"total_scored": 0, "distribution": {}}
+            return {
+                "total_scored": 0, 
+                "distribution": {},
+                "average_score": 0
+            }
 
 async def main():
     """Main function to run the job scorer"""

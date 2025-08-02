@@ -35,6 +35,7 @@ jobs:
     - name: Check environment setup
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
@@ -43,6 +44,11 @@ jobs:
           echo "Warning: SUPABASE_URL is not set"
         else
           echo "SUPABASE_URL is configured"
+        fi
+        if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+          echo "Warning: SUPABASE_SERVICE_ROLE_KEY is not set (required for RLS)"
+        else
+          echo "SUPABASE_SERVICE_ROLE_KEY is configured"
         fi
         if [ -z "$SUPABASE_ANON_KEY" ]; then
           echo "Warning: SUPABASE_ANON_KEY is not set"
@@ -58,7 +64,7 @@ jobs:
     - name: Run scraper and cleanup
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       run: |
         echo "Starting combined job scraper and cleanup..."
         python job_scraper_and_cleanup.py
@@ -67,7 +73,7 @@ jobs:
     - name: Run job info scraper
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       run: |
         echo "Starting job info scraper to fill missing company information..."
         python job_info_scraper.py
@@ -76,7 +82,7 @@ jobs:
     - name: Run AI job scorer
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         echo "Starting AI job scoring..."

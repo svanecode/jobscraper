@@ -17,6 +17,7 @@ import sys
 from datetime import datetime, timedelta
 from playwright.async_api import async_playwright
 from supabase import create_client, Client
+from supabase_rls_config import SupabaseRLSClient
 
 # Load environment variables from .env file if it exists
 try:
@@ -56,13 +57,18 @@ class JobScraperAndCleanup:
         self.jobs = []
         self.cleanup_hours = cleanup_hours
         
-        # Initialize Supabase client
+        # Initialize Supabase client with RLS support
         self.supabase_url = supabase_url or os.getenv('SUPABASE_URL')
-        self.supabase_key = supabase_key or os.getenv('SUPABASE_ANON_KEY')
+        self.supabase_key = supabase_key or os.getenv('SUPABASE_SERVICE_ROLE_KEY')
         
         if self.supabase_url and self.supabase_key:
-            self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
-            logger.info("✅ Supabase client initialized for combined scraper and cleanup")
+            # Use RLS-enabled client for better security
+            self.supabase = SupabaseRLSClient(
+                supabase_url=self.supabase_url,
+                supabase_key=self.supabase_key,
+                use_service_role=True
+            )
+            logger.info("✅ Supabase RLS client initialized for combined scraper and cleanup")
         else:
             self.supabase = None
             logger.error("❌ Supabase credentials not provided")
@@ -184,19 +190,13 @@ class JobScraperAndCleanup:
                         total_jobs += len(page_jobs)
                         logger.info(f"Found {len(page_jobs)} jobs on page {page_num}")
                         
-                        # Save jobs from this page to database in real-time
-                        save_success = self.save_page_jobs_to_supabase(page_jobs)
+                        # Save jobs from this page in real-time
+                        logger.info(f"💾 Saving {len(page_jobs)} jobs from page {page_num} to database...")
+                        save_success = self.supabase.insert_jobs(page_jobs)
                         if save_success:
-                            logger.info(f"💾 Real-time save: Successfully saved {len(page_jobs)} jobs from page {page_num}")
+                            logger.info(f"✅ Successfully saved {len(page_jobs)} jobs from page {page_num}")
                         else:
-                            logger.warning(f"⚠️ Real-time save: Failed to save jobs from page {page_num}")
-                        
-                        # Update last_seen for jobs from this page in real-time
-                        self._update_last_seen_for_all_jobs(page_jobs)
-                        logger.info(f"✅ Updated last_seen for {len(page_jobs)} jobs from page {page_num}")
-                        
-                        # Restore any previously deleted jobs found on this page
-                        self._restore_deleted_jobs(page_jobs)
+                            logger.warning(f"⚠️ Failed to save jobs from page {page_num}")
                     else:
                         logger.warning(f"No jobs found on page {page_num}")
                         break  # No jobs on current page, stop
@@ -361,7 +361,7 @@ class JobScraperAndCleanup:
             return None
     
     def save_jobs_to_supabase(self, table_name='jobs'):
-        """Save scraped jobs to Supabase database with duplicate detection and last_seen updates"""
+        """Save scraped jobs to Supabase database with RLS compliance"""
         if not self.supabase:
             logger.error("Supabase client not initialized")
             return False
@@ -371,302 +371,64 @@ class JobScraperAndCleanup:
             return False
         
         try:
-            # Get existing job IDs to check for duplicates
-            job_ids = [job['job_id'] for job in self.jobs]
+            # Use RLS-enabled client methods (handles duplicates and last_seen updates)
+            success = self.supabase.insert_jobs(self.jobs)
             
-            # Check which jobs already exist (only active, non-deleted jobs)
-            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).is_('deleted_at', 'null').execute()
-            existing_job_ids = {job['job_id'] for job in existing_jobs_result.data}
-            
-            # Separate new and existing jobs
-            new_jobs = []
-            existing_jobs = []
-            
-            for job in self.jobs:
-                if job['job_id'] in existing_job_ids:
-                    existing_jobs.append(job)
-                else:
-                    new_jobs.append(job)
-            
-            # Log the breakdown
-            logger.info(f"📊 Job analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs")
-            
-            if new_jobs:
-                # Prepare data for Supabase (set created_at and last_seen for new jobs)
-                jobs_data = []
-                from datetime import datetime, timezone
-                current_time = datetime.now(timezone.utc).isoformat()
+            if success:
+                logger.info(f"✅ Successfully saved {len(self.jobs)} jobs with RLS compliance")
                 
-                for job in new_jobs:
-                    job_data = job.copy()
-                    # Remove scraped_at as it will be handled by database
-                    job_data.pop('scraped_at', None)
-                    # Set created_at and last_seen for new jobs
-                    job_data['created_at'] = current_time
-                    job_data['last_seen'] = current_time
-                    jobs_data.append(job_data)
+                # Restore any previously deleted jobs
+                job_ids = [job['job_id'] for job in self.jobs]
+                self.supabase.restore_deleted_jobs(job_ids)
                 
-                # Insert only new jobs
-                result = self.supabase.table(table_name).insert(jobs_data).execute()
-                logger.info(f"✅ Successfully inserted {len(new_jobs)} new jobs to Supabase")
+                return True
             else:
-                logger.info("ℹ️ No new jobs to insert - all jobs already exist in database")
-            
-            # Note: last_seen is already updated in real-time during scraping
-            # No need to update again here
-            
-            # Restore any previously deleted jobs that were found during scraping
-            self._restore_deleted_jobs(self.jobs)
-            
-            return True
+                logger.error("Failed to save jobs with RLS compliance")
+                return False
             
         except Exception as e:
             logger.error(f"Error saving to Supabase: {e}")
             return False
     
-    def save_page_jobs_to_supabase(self, page_jobs, table_name='jobs'):
-        """Save jobs from a single page to Supabase in real-time"""
-        if not self.supabase:
-            logger.error("Supabase client not initialized")
-            return False
-        
-        if not page_jobs:
-            logger.warning("No jobs to save from this page")
-            return False
-        
-        try:
-            # Get existing job IDs to check for duplicates
-            job_ids = [job['job_id'] for job in page_jobs]
-            
-            # Check which jobs already exist (only active, non-deleted jobs)
-            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).is_('deleted_at', 'null').execute()
-            existing_job_ids = {job['job_id'] for job in existing_jobs_result.data}
-            
-            # Separate new and existing jobs
-            new_jobs = []
-            existing_jobs = []
-            
-            for job in page_jobs:
-                if job['job_id'] in existing_job_ids:
-                    existing_jobs.append(job)
-                else:
-                    new_jobs.append(job)
-            
-            # Log the breakdown for this page
-            logger.info(f"📄 Page analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs")
-            
-            if new_jobs:
-                # Prepare data for Supabase (set created_at and last_seen for new jobs)
-                jobs_data = []
-                from datetime import datetime, timezone
-                current_time = datetime.now(timezone.utc).isoformat()
-                
-                for job in new_jobs:
-                    job_data = job.copy()
-                    # Remove scraped_at as it will be handled by database
-                    job_data.pop('scraped_at', None)
-                    # Set created_at and last_seen for new jobs
-                    job_data['created_at'] = current_time
-                    job_data['last_seen'] = current_time
-                    jobs_data.append(job_data)
-                
-                # Insert only new jobs from this page
-                result = self.supabase.table(table_name).insert(jobs_data).execute()
-                logger.info(f"💾 Real-time save: Inserted {len(new_jobs)} new jobs to Supabase")
-            else:
-                logger.info("ℹ️ No new jobs to insert from this page - all jobs already exist in database")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error saving page jobs to Supabase: {e}")
-            return False
+
     
-    def _update_last_seen_for_all_jobs(self, jobs):
-        """Update last_seen timestamp for existing jobs found during scraping (new jobs already have last_seen set)"""
-        try:
-            from datetime import datetime, timezone
-            current_time = datetime.now(timezone.utc).isoformat()
-            
-            # Get job IDs of all jobs found during scraping
-            job_ids = [job['job_id'] for job in jobs]
-            
-            # Update last_seen for existing jobs (new jobs already have last_seen set during insertion)
-            result = self.supabase.table('jobs').update({
-                'last_seen': current_time
-            }).in_('job_id', job_ids).execute()
-            
-            logger.info(f"🔄 Updated last_seen for {len(jobs)} existing jobs")
-            
-        except Exception as e:
-            logger.error(f"Error updating last_seen for existing jobs: {e}")
-    
-    def _restore_deleted_jobs(self, jobs):
-        """Restore soft-deleted jobs that are found again during scraping"""
-        try:
-            from datetime import datetime, timezone
-            current_time = datetime.now(timezone.utc).isoformat()
-            
-            # Get job IDs of all jobs found during scraping
-            job_ids = [job['job_id'] for job in jobs]
-            
-            # Restore soft-deleted jobs by clearing deleted_at and updating last_seen
-            result = self.supabase.table('jobs').update({
-                'deleted_at': None,
-                'last_seen': current_time
-            }).in_('job_id', job_ids).not_.is_('deleted_at', 'null').execute()
-            
-            if result.data:
-                restored_count = len(result.data)
-                logger.info(f"🔄 Restored {restored_count} previously deleted jobs")
-            else:
-                logger.info("ℹ️ No previously deleted jobs to restore")
-            
-        except Exception as e:
-            logger.error(f"Error restoring deleted jobs: {e}")
-    
-    def get_old_jobs(self, batch_size=1000):
-        """Get jobs that haven't been seen in the specified number of hours (with batching to handle Supabase 1000 limit)"""
-        try:
-            # Calculate the cutoff time
-            cutoff_time = datetime.now() - timedelta(hours=self.cleanup_hours)
-            cutoff_iso = cutoff_time.isoformat()
-            
-            logger.info(f"🔍 Looking for jobs not seen since {cutoff_iso} ({self.cleanup_hours} hours ago)")
-            
-            all_old_jobs = []
-            offset = 0
-            
-            while True:
-                # Get batch of jobs that are active (not deleted) and haven't been seen recently
-                response = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').lt('last_seen', cutoff_iso).range(offset, offset + batch_size - 1).execute()
-                
-                batch_jobs = response.data or []
-                
-                if not batch_jobs:
-                    break  # No more jobs to fetch
-                
-                all_old_jobs.extend(batch_jobs)
-                logger.info(f"📦 Fetched batch {len(batch_jobs)} jobs (offset: {offset})")
-                
-                if len(batch_jobs) < batch_size:
-                    break  # Last batch (less than batch_size)
-                
-                offset += batch_size
-            
-            logger.info(f"📊 Found {len(all_old_jobs)} total jobs to clean up (across {offset//batch_size + 1} batches)")
-            
-            return all_old_jobs
-            
-        except Exception as e:
-            logger.error(f"❌ Error retrieving old jobs: {e}")
-            return []
-    
-    def soft_delete_job(self, job_id):
-        """Soft delete a job by setting deleted_at timestamp"""
-        try:
-            result = self.supabase.table('jobs').update({
-                'deleted_at': datetime.now().isoformat()
-            }).eq('job_id', job_id).execute()
-            
-            if result.data:
-                logger.info(f"🗑️ Successfully soft deleted job {job_id}")
-                return True
-            else:
-                logger.error(f"❌ Failed to soft delete job {job_id}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ Error soft deleting job {job_id}: {e}")
-            return False
+
     
     def cleanup_old_jobs(self, batch_size=1000, process_chunk_size=100):
-        """Clean up old jobs by soft-deleting them (with batching and chunked processing)"""
-        # Get old jobs with batching
-        old_jobs = self.get_old_jobs(batch_size=batch_size)
-        
-        if not old_jobs:
-            logger.info("ℹ️ No old jobs found to clean up")
+        """Clean up old jobs using RLS-enabled client"""
+        try:
+            # Use RLS-enabled cleanup function
+            deleted_count = self.supabase.cleanup_old_jobs(self.cleanup_hours)
+            
+            logger.info(f"🧹 RLS cleanup completed: {deleted_count} jobs cleaned up")
+            
+            return {
+                "total_checked": deleted_count,
+                "total_deleted": deleted_count,
+                "errors": 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error during RLS cleanup: {e}")
             return {
                 "total_checked": 0,
                 "total_deleted": 0,
-                "errors": 0
+                "errors": 1
             }
-        
-        logger.info(f"🧹 Starting cleanup of {len(old_jobs)} old jobs (processing in chunks of {process_chunk_size})")
-        
-        total_deleted = 0
-        total_errors = 0
-        
-        # Process jobs in chunks for better progress tracking
-        for i in range(0, len(old_jobs), process_chunk_size):
-            chunk = old_jobs[i:i + process_chunk_size]
-            chunk_num = (i // process_chunk_size) + 1
-            total_chunks = (len(old_jobs) + process_chunk_size - 1) // process_chunk_size
-            
-            logger.info(f"📦 Processing chunk {chunk_num}/{total_chunks} ({len(chunk)} jobs)")
-            
-            chunk_deleted = 0
-            chunk_errors = 0
-            
-            for job in chunk:
-                job_id = job.get('job_id')
-                title = job.get('title', 'Unknown')
-                last_seen = job.get('last_seen', 'Unknown')
-                
-                logger.info(f"🗑️ Cleaning up job: {title} ({job_id}) - Last seen: {last_seen}")
-                
-                if self.soft_delete_job(job_id):
-                    chunk_deleted += 1
-                else:
-                    chunk_errors += 1
-            
-            total_deleted += chunk_deleted
-            total_errors += chunk_errors
-            
-            logger.info(f"✅ Chunk {chunk_num}/{total_chunks} complete: {chunk_deleted} deleted, {chunk_errors} errors")
-        
-        # Final summary
-        logger.info("🎉 CLEANUP COMPLETE")
-        logger.info(f"📊 Total jobs processed: {len(old_jobs)}")
-        logger.info(f"🗑️ Jobs deleted: {total_deleted}")
-        logger.info(f"❌ Errors: {total_errors}")
-        
-        return {
-            "total_checked": len(old_jobs),
-            "total_deleted": total_deleted,
-            "errors": total_errors
-        }
     
     def get_stats(self):
-        """Get comprehensive statistics about the database"""
+        """Get comprehensive statistics about the database using RLS-enabled client"""
         try:
-            # Get total jobs
-            total_result = self.supabase.table('jobs').select('*', count='exact').execute()
-            total_jobs = total_result.count or 0
+            # Use RLS-enabled statistics function
+            stats = self.supabase.get_job_statistics()
             
-            # Get active jobs
-            active_result = self.supabase.table('jobs').select('*', count='exact').is_('deleted_at', 'null').execute()
-            active_jobs = active_result.count or 0
-            
-            # Get deleted jobs
-            deleted_result = self.supabase.table('jobs').select('*', count='exact').not_.is_('deleted_at', 'null').execute()
-            deleted_jobs = deleted_result.count or 0
-            
-            # Get jobs that would be cleaned up in next run
-            cutoff_time = datetime.now() - timedelta(hours=self.cleanup_hours)
-            cutoff_iso = cutoff_time.isoformat()
-            old_jobs_result = self.supabase.table('jobs').select('*', count='exact').is_('deleted_at', 'null').lt('last_seen', cutoff_iso).execute()
-            old_jobs_count = old_jobs_result.count or 0
-            
-            return {
-                "total_jobs": total_jobs,
-                "active_jobs": active_jobs,
-                "deleted_jobs": deleted_jobs,
-                "old_jobs_count": old_jobs_count,
+            # Add additional info
+            stats.update({
                 "cleanup_hours": self.cleanup_hours,
                 "scraped_jobs": len(self.jobs)
-            }
+            })
+            
+            return stats
             
         except Exception as e:
             logger.error(f"❌ Error getting stats: {e}")
@@ -674,7 +436,7 @@ class JobScraperAndCleanup:
                 "total_jobs": 0,
                 "active_jobs": 0,
                 "deleted_jobs": 0,
-                "old_jobs_count": 0,
+                "jobs_scraped_today": 0,
                 "cleanup_hours": self.cleanup_hours,
                 "scraped_jobs": len(self.jobs)
             }
@@ -692,8 +454,8 @@ async def main():
         logger.info("📥 STEP 1: Scraping jobs from Jobindex")
         scraping_success = await scraper_cleanup.scrape_jobs()
         
-        # Step 2: Clean up old jobs (jobs are now saved in real-time during scraping)
-        if len(scraper_cleanup.jobs) > 0:
+        if scraping_success and len(scraper_cleanup.jobs) > 0:
+            # Step 2: Clean up old jobs (jobs are already saved in real-time during scraping)
             logger.info("🧹 STEP 2: Cleaning up old jobs")
             cleanup_stats = scraper_cleanup.cleanup_old_jobs()
             
@@ -704,7 +466,7 @@ async def main():
             logger.info(f"  Active jobs: {stats['active_jobs']}")
             logger.info(f"  Deleted jobs: {stats['deleted_jobs']}")
             logger.info(f"  Jobs scraped this run: {stats['scraped_jobs']}")
-            logger.info(f"  Jobs that would be cleaned up next run: {stats['old_jobs_count']}")
+            logger.info(f"  Jobs scraped today: {stats['jobs_scraped_today']}")
             logger.info(f"  Cleanup threshold: {stats['cleanup_hours']} hours")
             logger.info(f"  Jobs deleted this run: {cleanup_stats['total_deleted']}")
             

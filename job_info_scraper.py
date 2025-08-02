@@ -569,7 +569,14 @@ class JobInfoScraper:
             all_jobs_response = self.supabase.table('jobs').select('company,company_url,description,job_info').is_('deleted_at', 'null').execute()
             
             if not all_jobs_response.data:
-                return {"total_jobs": 0, "missing_info": 0, "missing_fields": {}, "processed_by_job_info": 0}
+                return {
+                    "total_jobs": 0, 
+                    "missing_info": 0, 
+                    "missing_fields": {}, 
+                    "missing_percentage": 0,
+                    "processed_by_job_info": 0,
+                    "processed_percentage": 0
+                }
             
             total_jobs = len(all_jobs_response.data)
             missing_info_count = 0
@@ -606,7 +613,14 @@ class JobInfoScraper:
             
         except Exception as e:
             logger.error(f"Error getting missing info stats: {e}")
-            return {"total_jobs": 0, "missing_info": 0, "missing_fields": {}}
+            return {
+                "total_jobs": 0, 
+                "missing_info": 0, 
+                "missing_fields": {},
+                "missing_percentage": 0,
+                "processed_by_job_info": 0,
+                "processed_percentage": 0
+            }
 
 async def main():
     """Main function to run the job info scraper"""
