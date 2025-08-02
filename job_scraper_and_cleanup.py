@@ -42,7 +42,7 @@ class JobScraperAndCleanup:
     Handles both scraping new jobs and cleaning up old ones in a single workflow.
     """
     
-    def __init__(self, supabase_url=None, supabase_key=None, cleanup_hours=12):
+    def __init__(self, supabase_url=None, supabase_key=None, cleanup_hours=2):
         """
         Initialize the combined scraper and cleanup utility
         
