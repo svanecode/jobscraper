@@ -180,14 +180,25 @@ class JobInfoScraper:
                 company_name = None
                 company_url = None
                 
-                # Try the company div in the toolbar
+                # Try the company div in the toolbar (newer format)
                 try:
                     company_element = await page.query_selector('.jix-toolbar-top__company')
                     if company_element:
-                        company_name = await company_element.inner_text()
-                        if company_name and company_name.strip():
-                            company_name = company_name.strip()
+                        company_text = await company_element.inner_text()
+                        if company_text and company_text.strip():
+                            company_text = company_text.strip()
+                            # Handle "Company søger for kunde" format
+                            if ' søger for kunde' in company_text:
+                                company_name = company_text.replace(' søger for kunde', '').strip()
+                            else:
+                                company_name = company_text
                             logger.debug(f"Found company in toolbar: '{company_name}'")
+                            
+                            # Try to get company URL from the link
+                            company_link = await company_element.query_selector('a')
+                            if company_link:
+                                company_url = await company_link.get_attribute('href')
+                                logger.debug(f"Found company URL: '{company_url}'")
                 except Exception as e:
                     logger.debug(f"Error getting company from toolbar: {e}")
                 
@@ -242,17 +253,41 @@ class JobInfoScraper:
                 
                 # Try to find the description in the job content area
                 try:
-                    # Look for the description paragraph
+                    # First try the traditional .jix_robotjob-inner selector
                     desc_element = await page.query_selector('.jix_robotjob-inner p')
                     if desc_element:
                         description = await desc_element.inner_text()
                         if description and description.strip():
                             description = description.strip()
-                            logger.debug(f"Found description in p tag: '{description[:100]}...'")
+                            logger.debug(f"Found description in .jix_robotjob-inner p tag: '{description[:100]}...'")
                 except Exception as e:
-                    logger.debug(f"Error getting description from p tag: {e}")
+                    logger.debug(f"Error getting description from .jix_robotjob-inner p tag: {e}")
                 
-                # If no description found, try to find it in the job content area
+                # If no description found, try the PaidJob-inner structure (newer format)
+                if not description:
+                    try:
+                        job_content = await page.query_selector('.PaidJob-inner')
+                        if job_content:
+                            # Get all paragraph elements within PaidJob-inner
+                            p_elements = await job_content.query_selector_all('p')
+                            if p_elements:
+                                # Combine all paragraph text
+                                desc_parts = []
+                                for p_elem in p_elements:
+                                    p_text = await p_elem.inner_text()
+                                    if p_text and p_text.strip():
+                                        p_text = p_text.strip()
+                                        # Skip very short paragraphs that might be metadata
+                                        if len(p_text) > 10:
+                                            desc_parts.append(p_text)
+                                
+                                if desc_parts:
+                                    description = ' '.join(desc_parts)
+                                    logger.debug(f"Found description in PaidJob-inner p tags: '{description[:100]}...'")
+                    except Exception as e:
+                        logger.debug(f"Error getting description from PaidJob-inner: {e}")
+                
+                # If still no description found, try the traditional .jix_robotjob-inner approach
                 if not description:
                     try:
                         job_content = await page.query_selector('.jix_robotjob-inner')
@@ -357,7 +392,11 @@ class JobInfoScraper:
                 logger.info(f"Successfully scraped info for job {job_id}")
                 logger.info(f"Title: '{job_info.get('title')}'")
                 logger.info(f"Company: '{job_info.get('company')}'")
-                logger.info(f"Description: '{job_info.get('description', '')[:100]}...'")
+                description = job_info.get('description', '')
+                if description:
+                    logger.info(f"Description: '{description[:100]}...'")
+                else:
+                    logger.info(f"Description: '{description}'")
                 logger.info(f"Location: '{job_info.get('location')}'")
                 
                 return job_info
@@ -383,19 +422,20 @@ class JobInfoScraper:
             # Only update fields that have meaningful values
             update_data = {}
             for key, value in job_info.items():
-                if value is not None and value.strip():
+                if value is not None and str(value).strip():
+                    value_str = str(value).strip()
                     # Additional validation for different field types
-                    if key == 'description' and len(value.strip()) < 20:
+                    if key == 'description' and len(value_str) < 20:
                         # Skip very short descriptions
                         continue
-                    elif key == 'company' and len(value.strip()) < 2:
+                    elif key == 'company' and len(value_str) < 2:
                         # Skip very short company names
                         continue
-                    elif key == 'title' and len(value.strip()) < 5:
+                    elif key == 'title' and len(value_str) < 5:
                         # Skip very short titles
                         continue
                     else:
-                        update_data[key] = value.strip()
+                        update_data[key] = value_str
             
             # Always add the job_info timestamp to mark this job as processed
             from datetime import datetime, timezone
@@ -542,13 +582,13 @@ class JobInfoScraper:
                     processed_by_job_info_count += 1
                 
                 has_missing = False
-                if not job.get('company') or not job.get('company').strip():
+                if not job.get('company') or not str(job.get('company', '')).strip():
                     missing_fields['company'] += 1
                     has_missing = True
-                if not job.get('company_url') or not job.get('company_url').strip():
+                if not job.get('company_url') or not str(job.get('company_url', '')).strip():
                     missing_fields['company_url'] += 1
                     has_missing = True
-                if not job.get('description') or not job.get('description').strip():
+                if not job.get('description') or not str(job.get('description', '')).strip():
                     missing_fields['description'] += 1
                     has_missing = True
                 

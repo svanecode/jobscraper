@@ -194,6 +194,9 @@ class JobScraperAndCleanup:
                         # Update last_seen for jobs from this page in real-time
                         self._update_last_seen_for_all_jobs(page_jobs)
                         logger.info(f"✅ Updated last_seen for {len(page_jobs)} jobs from page {page_num}")
+                        
+                        # Restore any previously deleted jobs found on this page
+                        self._restore_deleted_jobs(page_jobs)
                     else:
                         logger.warning(f"No jobs found on page {page_num}")
                         break  # No jobs on current page, stop
@@ -371,8 +374,8 @@ class JobScraperAndCleanup:
             # Get existing job IDs to check for duplicates
             job_ids = [job['job_id'] for job in self.jobs]
             
-            # Check which jobs already exist
-            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).execute()
+            # Check which jobs already exist (only active, non-deleted jobs)
+            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).is_('deleted_at', 'null').execute()
             existing_job_ids = {job['job_id'] for job in existing_jobs_result.data}
             
             # Separate new and existing jobs
@@ -412,6 +415,9 @@ class JobScraperAndCleanup:
             # Note: last_seen is already updated in real-time during scraping
             # No need to update again here
             
+            # Restore any previously deleted jobs that were found during scraping
+            self._restore_deleted_jobs(self.jobs)
+            
             return True
             
         except Exception as e:
@@ -432,8 +438,8 @@ class JobScraperAndCleanup:
             # Get existing job IDs to check for duplicates
             job_ids = [job['job_id'] for job in page_jobs]
             
-            # Check which jobs already exist
-            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).execute()
+            # Check which jobs already exist (only active, non-deleted jobs)
+            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).is_('deleted_at', 'null').execute()
             existing_job_ids = {job['job_id'] for job in existing_jobs_result.data}
             
             # Separate new and existing jobs
@@ -494,6 +500,30 @@ class JobScraperAndCleanup:
             
         except Exception as e:
             logger.error(f"Error updating last_seen for existing jobs: {e}")
+    
+    def _restore_deleted_jobs(self, jobs):
+        """Restore soft-deleted jobs that are found again during scraping"""
+        try:
+            from datetime import datetime, timezone
+            current_time = datetime.now(timezone.utc).isoformat()
+            
+            # Get job IDs of all jobs found during scraping
+            job_ids = [job['job_id'] for job in jobs]
+            
+            # Restore soft-deleted jobs by clearing deleted_at and updating last_seen
+            result = self.supabase.table('jobs').update({
+                'deleted_at': None,
+                'last_seen': current_time
+            }).in_('job_id', job_ids).not_.is_('deleted_at', 'null').execute()
+            
+            if result.data:
+                restored_count = len(result.data)
+                logger.info(f"🔄 Restored {restored_count} previously deleted jobs")
+            else:
+                logger.info("ℹ️ No previously deleted jobs to restore")
+            
+        except Exception as e:
+            logger.error(f"Error restoring deleted jobs: {e}")
     
     def get_old_jobs(self, batch_size=1000):
         """Get jobs that haven't been seen in the specified number of hours (with batching to handle Supabase 1000 limit)"""
