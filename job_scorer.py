@@ -60,11 +60,15 @@ class JobScorer:
     def __init__(self, supabase_url=None, supabase_key=None, openai_api_key=None):
         # Initialize Supabase client
         self.supabase_url = supabase_url or os.getenv('SUPABASE_URL')
-        self.supabase_key = supabase_key or os.getenv('SUPABASE_ANON_KEY')
+        self.supabase_key = supabase_key or os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_ANON_KEY')
         
         if self.supabase_url and self.supabase_key:
             self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
-            logger.info("Supabase client initialized")
+            # Log which key type is being used
+            if os.getenv('SUPABASE_SERVICE_ROLE_KEY'):
+                logger.info("Supabase client initialized with SERVICE_ROLE_KEY (RLS bypass)")
+            else:
+                logger.info("Supabase client initialized with ANON_KEY")
         else:
             self.supabase = None
             logger.error("Supabase credentials not provided. Cannot proceed.")
