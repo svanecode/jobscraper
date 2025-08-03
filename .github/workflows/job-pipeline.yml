@@ -5,7 +5,7 @@ on:
   schedule:
     # Run daily at 5:00 AM Danish time (CET/CEST)
     # This is 3:00 AM UTC in winter (CET) and 4:00 AM UTC in summer (CEST)
-    - cron: '0 3 * * *'
+    - cron: '0 5 * * *'
 
 jobs:
   scrape-cleanup-and-score:
