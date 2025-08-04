@@ -371,16 +371,11 @@ class JobScraperAndCleanup:
             return False
         
         try:
-            # Use RLS-enabled client methods (handles duplicates and last_seen updates)
+            # Use RLS-enabled client methods (handles duplicates, restoration, and last_seen updates)
             success = self.supabase.insert_jobs(self.jobs)
             
             if success:
-                logger.info(f"✅ Successfully saved {len(self.jobs)} jobs with RLS compliance")
-                
-                # Restore any previously deleted jobs
-                job_ids = [job['job_id'] for job in self.jobs]
-                self.supabase.restore_deleted_jobs(job_ids)
-                
+                logger.info(f"✅ Successfully processed {len(self.jobs)} jobs with RLS compliance")
                 return True
             else:
                 logger.error("Failed to save jobs with RLS compliance")
