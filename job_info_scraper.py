@@ -465,7 +465,7 @@ class JobInfoScraper:
     
 
     
-    async def process_jobs_with_missing_info(self, max_jobs=None, delay=1.0, newest_first=True, limit_newest=None):
+    async def process_jobs_with_missing_info(self, max_jobs=None, delay=1.0, newest_first=True):
         """
         Process jobs with missing information, prioritizing newest jobs
         
@@ -473,13 +473,9 @@ class JobInfoScraper:
             max_jobs: Maximum number of jobs to process (for testing)
             delay: Delay between requests in seconds
             newest_first: Whether to prioritize newest jobs (default: True)
-            limit_newest: Limit to newest N jobs (default: None, processes all)
         """
         # Get jobs with missing information
-        if newest_first and limit_newest:
-            # Get only the newest N jobs
-            jobs = self.get_jobs_with_missing_info_limited(limit_newest)
-        elif newest_first:
+        if newest_first:
             # Get all jobs, but they're already ordered by newest first
             jobs = self.get_jobs_with_missing_info()
         else:
@@ -494,9 +490,7 @@ class JobInfoScraper:
             jobs = jobs[:max_jobs]
             logger.info(f"Processing {len(jobs)} jobs (limited for testing)")
         else:
-            if newest_first and limit_newest:
-                logger.info(f"Processing {len(jobs)} newest jobs with missing information (limited to {limit_newest})")
-            elif newest_first:
+            if newest_first:
                 logger.info(f"Processing {len(jobs)} jobs with missing information (newest first)")
             else:
                 logger.info(f"Processing {len(jobs)} jobs with missing information")
@@ -647,8 +641,7 @@ async def main():
         await scraper.process_jobs_with_missing_info(
             max_jobs=None,  # Set to a number for testing
             delay=2.0,  # 2 second delay between requests
-            newest_first=True,  # Prioritize newest jobs
-            limit_newest=50  # Process only the newest 50 jobs (adjust as needed)
+            newest_first=True  # Prioritize newest jobs
         )
         
         # Print final statistics

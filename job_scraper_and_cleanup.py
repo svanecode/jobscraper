@@ -313,7 +313,7 @@ class JobScraperAndCleanup:
             # Extract company name
             company = None
             try:
-                company_element = await job_wrapper.query_selector('.company, .employer, .job-company')
+                company_element = await job_wrapper.query_selector('.jix-toolbar-top__company, .company, .employer, .job-company')
                 if company_element:
                     company = await company_element.inner_text()
                     company = company.strip() if company else None
@@ -323,7 +323,7 @@ class JobScraperAndCleanup:
             # Extract location
             location = None
             try:
-                location_element = await job_wrapper.query_selector('.location, .job-location, .place')
+                location_element = await job_wrapper.query_selector('.jix_robotjob--area, .location, .job-location, .place')
                 if location_element:
                     location = await location_element.inner_text()
                     location = location.strip() if location else None
@@ -342,16 +342,26 @@ class JobScraperAndCleanup:
             except Exception as e:
                 logger.debug(f"Error extracting publication date: {e}")
             
+            # Extract description
+            description = None
+            try:
+                description_element = await job_wrapper.query_selector('.jix_robotjob--description, .description, .job-description, .summary, .job-summary')
+                if description_element:
+                    description = await description_element.inner_text()
+                    description = description.strip() if description else None
+            except Exception as e:
+                logger.debug(f"Error extracting description: {e}")
+            
             # Create job data
             job_data = {
                 'job_id': job_id,
                 'title': title or 'Unknown Title',
-                'company': company or 'Unknown Company',
-                'location': location or 'Unknown Location',
+                'company': company,  # Leave as None if unknown
+                'location': location,  # Leave as None if unknown
                 'publication_date': publication_date or datetime.now().strftime('%Y-%m-%d'),
                 'job_url': f"https://www.jobindex.dk/vis-job/{job_id}",
                 'company_url': None,  # Will be filled by job_info_scraper if needed
-                'description': None,  # Will be filled by job_info_scraper if needed
+                'description': description,  # Extract description from listing
             }
             
             return job_data
