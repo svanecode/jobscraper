@@ -1,0 +1,71 @@
+name: Generate Job Embeddings
+
+on:
+  workflow_dispatch:  # Allow manual triggering
+  schedule:
+    # Run daily at 6:00 AM Danish time (CET/CEST) - after the main pipeline
+    # This is 4:00 AM UTC in winter (CET) and 5:00 AM UTC in summer (CEST)
+    - cron: '0 6 * * *'
+
+jobs:
+  generate-embeddings:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Check environment setup
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      run: |
+        echo "Checking environment variables..."
+        if [ -z "$SUPABASE_URL" ]; then
+          echo "Error: SUPABASE_URL is required"
+          exit 1
+        fi
+        if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+          echo "Error: SUPABASE_SERVICE_ROLE_KEY is required for embedding operations"
+          exit 1
+        fi
+        if [ -z "$OPENAI_API_KEY" ]; then
+          echo "Error: OPENAI_API_KEY is required for embedding generation"
+          exit 1
+        fi
+        echo "✅ All required environment variables are configured"
+        
+    - name: Generate job embeddings
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      run: |
+        echo "🚀 Starting job embedding generation..."
+        echo "📊 This will generate embeddings for jobs that don't have them yet"
+        python job_embedding_generator.py
+        echo "✅ Job embedding generation completed successfully"
+        
+    - name: Send notification on success
+      if: success()
+      run: |
+        echo "✅ Embedding generation completed successfully!"
+        echo "🔍 Job embeddings are now available for similarity search"
+        
+    - name: Send notification on failure
+      if: failure()
+      run: |
+        echo "❌ Embedding generation failed!"
+        echo "Please check the logs for details"
+        echo "💡 Make sure the pgvector extension is enabled in your database" 

@@ -1,4 +1,4 @@
-name: Job Pipeline (Scrape, Cleanup, Info & Score)
+name: Job Pipeline (Scrape, Cleanup, Info, Score & Embeddings)
 
 on:
   workflow_dispatch:  # Allow manual triggering
@@ -89,6 +89,16 @@ jobs:
         python job_scorer.py
         echo "AI job scoring completed successfully"
         
+    - name: Generate job embeddings
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      run: |
+        echo "Starting job embedding generation..."
+        python job_embedding_generator.py
+        echo "Job embedding generation completed successfully"
+        
     - name: Upload artifacts (if any)
       uses: actions/upload-artifact@v4
       if: always()
@@ -103,7 +113,7 @@ jobs:
       if: success()
       run: |
         echo "✅ Job pipeline completed successfully!"
-        echo "📊 Jobs scraped, cleaned up, info filled, and scored for CFO services"
+        echo "📊 Jobs scraped, cleaned up, info filled, scored, and embeddings generated for CFO services"
         
     - name: Send notification on failure
       if: failure()

@@ -434,7 +434,7 @@ async def main():
         # Score jobs (limited to 100 unscored jobs per run)
         await scorer.score_all_jobs(
             batch_size=5,  # Conservative batch size for API rate limits
-            max_jobs=100,  # Limited to 100 jobs per run
+            max_jobs=1000,  # Limited to 100 jobs per run
             delay=2.0,  # 2 second delay between batches
             only_unscored=True  # Only score jobs that haven't been scored yet
         )
