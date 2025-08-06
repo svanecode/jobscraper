@@ -87,7 +87,7 @@ class JobEmbeddingGenerator:
     
     def create_embedding_text(self, job: Dict) -> str:
         """
-        Create text for embedding from job data
+        Create optimal text for embedding with balanced weighting
         
         Args:
             job: Job dictionary
@@ -95,22 +95,66 @@ class JobEmbeddingGenerator:
         Returns:
             Formatted text string for embedding
         """
-        # Combine title, company, location, and description
-        title = job.get('title', '')
-        company = job.get('company', '')
-        location = job.get('location', '')
-        description = job.get('description', '')
+        # Extract job data
+        title = job.get('title', '') or ''
+        company = job.get('company', '') or ''
+        location = job.get('location', '') or ''
+        description = job.get('description', '') or ''
         
-        # Create a comprehensive text for embedding
-        embedding_text = f"Title: {title}\nCompany: {company}\nLocation: {location}\nDescription: {description}"
+        # Strip whitespace
+        title = title.strip()
+        company = company.strip()
+        location = location.strip()
+        description = description.strip()
+
+        # Create optimal embedding text with balanced weighting
+        # Strategy: Emphasize company and title while keeping full description
+        # Format: Company - Title. Location. Full description with company/title repeated
+        
+        # Clean and prepare text components
+        if not title:
+            title = "Job"
+        if not company:
+            company = "Company"
+        if not location:
+            location = "Location not specified"
+        
+        # Create weighted description that repeats company and title for emphasis
+        weighted_description = f"{company} - {title}. {description}"
+        
+        # Create final embedding text with enhanced searchability
+        # Give maximum weight to location, company, and title by repeating them multiple times
+        # This makes the embeddings more sensitive to location and company searches
+        embedding_text = f"""Location: {location}
+Company: {company}
+Title: {title}
+Location: {location}
+Company: {company}
+{company} - {title}
+Location: {location}
+Description: {weighted_description}"""
         
         # Clean up the text
         embedding_text = embedding_text.strip()
         
         # If text is too long, truncate it (OpenAI has a limit of 8191 tokens)
         if len(embedding_text) > 8000:
-            embedding_text = embedding_text[:8000] + "..."
-        
+            # Keep the most important parts (location, company, title) and truncate description
+            important_parts = f"""Location: {location}
+Company: {company}
+Title: {title}
+Location: {location}
+Company: {company}
+{company} - {title}
+Location: {location}
+Description: {company} - {title}. """
+            remaining_length = 8000 - len(important_parts)
+            if remaining_length > 0:
+                truncated_description = description[:remaining_length] + "..."
+                embedding_text = important_parts + truncated_description
+            else:
+                embedding_text = important_parts + description[:100] + "..."
+
         return embedding_text
     
     async def generate_embedding(self, text: str) -> Optional[List[float]]:
@@ -139,32 +183,35 @@ class JobEmbeddingGenerator:
             logger.error(f"Error generating embedding: {e}")
             return None
     
-    def update_job_embedding(self, job_id: str, embedding: List[float]) -> bool:
+    def update_job_embedding(self, job_id: int, embedding: List[float]) -> bool:
         """
         Update the job embedding in the database
         
         Args:
-            job_id: Job ID
+            job_id: Job ID (bigint primary key)
             embedding: Embedding vector as list of floats
         
         Returns:
             True if successful, False otherwise
         """
         try:
+            # Convert embedding to proper format for Supabase
+            embedding_array = list(embedding)  # Ensure it's a list
+            
             response = self.supabase.table('jobs').update({
-                'embedding': embedding,
+                'embedding': embedding_array,
                 'embedding_created_at': 'now()'
-            }).eq('job_id', job_id).execute()
+            }).eq('id', job_id).execute()
             
             if response.data:
-                logger.debug(f"Updated embedding for job {job_id}")
+                logger.debug(f"Updated embedding for job ID {job_id}")
                 return True
             else:
-                logger.error(f"Failed to update embedding for job {job_id}")
+                logger.error(f"Failed to update embedding for job ID {job_id}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error updating embedding for job {job_id}: {e}")
+            logger.error(f"Error updating embedding for job ID {job_id}: {e}")
             return False
     
     async def process_job_embedding(self, job: Dict) -> bool:
@@ -182,26 +229,26 @@ class JobEmbeddingGenerator:
             embedding_text = self.create_embedding_text(job)
             
             if not embedding_text.strip():
-                logger.warning(f"No text content for job {job.get('job_id')}, skipping")
+                logger.warning(f"No text content for job ID {job.get('id')}, skipping")
                 return False
             
             # Generate embedding
             embedding = await self.generate_embedding(embedding_text)
             
             if embedding is None:
-                logger.error(f"Failed to generate embedding for job {job.get('job_id')}")
+                logger.error(f"Failed to generate embedding for job ID {job.get('id')}")
                 return False
             
             # Update database
-            success = self.update_job_embedding(job['job_id'], embedding)
+            success = self.update_job_embedding(job['id'], embedding)
             
             if success:
-                logger.debug(f"Successfully processed embedding for job '{job.get('title')}' ({job.get('job_id')})")
+                logger.debug(f"Successfully processed embedding for job '{job.get('title')}' (ID: {job.get('id')})")
             
             return success
                 
         except Exception as e:
-            logger.error(f"Error processing job {job.get('job_id')}: {e}")
+            logger.error(f"Error processing job ID {job.get('id')}: {e}")
             return False
     
     async def generate_all_embeddings(self, batch_size=10, max_jobs=None, delay=1.0):
@@ -240,7 +287,7 @@ class JobEmbeddingGenerator:
             # Process results
             for job, result in zip(batch, results):
                 if isinstance(result, Exception):
-                    logger.error(f"Error processing job {job.get('job_id')}: {result}")
+                    logger.error(f"Error processing job ID {job.get('id')}: {result}")
                     total_errors += 1
                     continue
                 

@@ -53,7 +53,8 @@ jobs:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         echo "🚀 Starting job embedding generation..."
-        echo "📊 This will generate embeddings for jobs that don't have them yet"
+        echo "📊 This will generate embeddings for jobs with CFO score >= 1 that don't have them yet"
+        echo "🎯 Using optimal embedding strategy with balanced weighting"
         python job_embedding_generator.py
         echo "✅ Job embedding generation completed successfully"
         
@@ -62,6 +63,8 @@ jobs:
       run: |
         echo "✅ Embedding generation completed successfully!"
         echo "🔍 Job embeddings are now available for similarity search"
+        echo "🎯 Optimal embedding strategy with balanced weighting applied"
+        echo "📊 Coverage: Jobs with CFO score >= 1 now have embeddings"
         
     - name: Send notification on failure
       if: failure()
