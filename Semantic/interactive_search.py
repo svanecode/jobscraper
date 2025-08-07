@@ -5,6 +5,7 @@ Interactive Semantic Search Script
 
 This script provides an interactive interface for semantic job search.
 Users can input questions and get real-time results from the database.
+Enhanced with AI query structuring and conversation context.
 """
 
 import asyncio
@@ -48,14 +49,89 @@ class InteractiveSemanticSearch:
             self.openai_client = None
             logger.error("OpenAI API key not provided. Cannot proceed.")
             raise ValueError("OpenAI API key required")
+        
+        # Initialize conversation context
+        self.conversation_history = []
+        self.max_history_length = 10  # Keep last 10 exchanges
+    
+    async def structure_query_with_ai(self, user_question: str, conversation_context: List[Dict] = None) -> str:
+        """
+        Use AI to structure and enhance the user query for better search results
+        """
+        try:
+            # Prepare conversation context for AI
+            context_text = ""
+            if conversation_context:
+                context_text = "\n".join([
+                    f"Tidligere spørgsmål: {exchange.get('question', '')}"
+                    for exchange in conversation_context[-3:]  # Last 3 exchanges
+                ])
+            
+            # Create prompt for query structuring
+            prompt = f"""
+Du er en ekspert i at strukturere job-søgninger. Din opgave er at forbedre brugerens spørgsmål for bedre søgeresultater.
+
+KONTEKST:
+Alle jobs i databasen er økonomi/regnskab stillinger (controller, bogholder, økonomimedarbejder, etc.).
+Fokuser derfor på: virksomhedstype, lokation, projekttyper, ikke jobfunktionen selv.
+
+{context_text if context_text else "Ingen tidligere kontekst"}
+
+BRUGER SPØRGSMÅL: "{user_question}"
+
+VIGTIGE REGLER:
+1. Identificer virksomhedsnavne og lokationer i spørgsmålet
+2. Hvis brugeren spørger om en SPECIFIK VIRKSOMHED, gentag virksomhedsnavnet 2-3 gange
+3. Hvis brugeren spørger om en SPECIFIK LOKATION, gentag lokationen 2-3 gange
+4. IKKE gentag ord som "søger", "jobs", "stillinger", "nogeni", "er", "der", "hvor", etc.
+5. Kombiner virksomhed/lokation med relevante job-termer
+
+OPGAVE:
+1. Forstå brugerens intention
+2. Identificer specifikke virksomheder eller lokationer
+3. Gentag disse specifikke termer 2-3 gange
+4. Tilføj relevante job-termer
+5. Bevar den oprindelige mening
+
+RETUR:
+Kun det forbedrede spørgsmål, intet andet. Hold det under 100 ord.
+
+Eksempler:
+- "søger novo nordisk?" → "Novo Nordisk Novo Nordisk økonomi regnskab controller stillinger"
+- "pharma jobs" → "pharma pharmaceutical medicinal company økonomi regnskab controller"
+- "remote stillinger" → "remote hjemmearbejde hybrid work økonomi regnskab"
+- "controller stillinger" → "controller økonomi regnskab stillinger"
+- "finance jobs" → "finance økonomi regnskab stillinger"
+"""
+            
+            # Get AI response
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Du er en ekspert i at strukturere job-søgninger. Giv kun det forbedrede spørgsmål som svar."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150,
+                temperature=0.3
+            )
+            
+            structured_query = response.choices[0].message.content.strip()
+            logger.info(f"Original query: '{user_question}' → Structured: '{structured_query}'")
+            print(f"🔍 AI strukturerede: '{user_question}' → '{structured_query}'")
+            return structured_query
+            
+        except Exception as e:
+            logger.error(f"Error structuring query with AI: {e}")
+            # Fallback to original query
+            return user_question
     
     async def generate_embedding(self, text: str) -> Optional[List[float]]:
         """
-        Generate embedding for given text using OpenAI's text-embedding-ada-002 model
+        Generate embedding for given text using OpenAI's text-embedding-3-large model
         """
         try:
             response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
+                model="text-embedding-3-large",
                 input=text
             )
             
@@ -73,10 +149,22 @@ class InteractiveSemanticSearch:
         # Convert to lowercase for better matching
         question = question.lower().strip()
         
-        # Add common synonyms and variations
+        # If AI has already structured the query with repetitions, don't add more synonyms
+        # Check if there are repeated terms (indicating AI has already enhanced it)
+        words = question.split()
+        word_counts = {}
+        for word in words:
+            word_counts[word] = word_counts.get(word, 0) + 1
+        
+        # If any word appears more than 2 times, AI has already enhanced it
+        has_ai_enhancement = any(count > 2 for count in word_counts.values())
+        
+        if has_ai_enhancement:
+            # AI has already enhanced the query, just return it
+            return question
+        
+        # Add common synonyms and variations only if AI hasn't enhanced it
         synonyms = {
-            'aarhus': 'aarhus location',
-            'københavn': 'københavn location',
             'pharma': 'pharma company pharmaceutical',
             'fragt': 'fragt transport logistik',
             'marketing': 'marketing reklame',
@@ -106,9 +194,14 @@ class InteractiveSemanticSearch:
         """
         question_lower = question.lower()
         
+        # Specific company queries need very low threshold for exact matching
+        # Check for company name patterns
+        if any(word in question_lower for word in ['virksomhed', 'firma', 'selskab', 'as', 'aps']):
+            return 0.35  # Very low threshold for specific company searches
+        
         # Location queries need lower threshold for better matching
-        location_terms = ['aarhus', 'københavn', 'odense', 'aalborg', 'esbjerg', 'roskilde', 'horsens', 'vejle', 'randers', 'herning']
-        if any(term in question_lower for term in location_terms):
+        # Check for common location patterns
+        if any(word in question_lower for word in ['by', 'sted', 'område', 'region', 'kommune']):
             return 0.4  # Lower threshold for location searches
         
         # Company name queries
@@ -129,7 +222,7 @@ class InteractiveSemanticSearch:
         Perform semantic search for jobs based on a question
         """
         try:
-            # Preprocess the query
+            # Preprocess the original query directly (no AI structuring first)
             enhanced_question = self.preprocess_query(question)
             
             # Generate embedding for the enhanced question
@@ -193,14 +286,23 @@ class InteractiveSemanticSearch:
         
         return result
     
-    async def get_ai_analysis(self, question: str, jobs: List[Dict]) -> str:
+    async def get_ai_analysis(self, question: str, jobs: List[Dict], conversation_context: List[Dict] = None) -> str:
         """
-        Get AI analysis of the search results
+        Get AI analysis of the search results with conversation context
         """
         if not jobs:
             return "❌ Ingen jobs fundet at analysere."
         
         try:
+            # Prepare conversation context
+            context_text = ""
+            if conversation_context:
+                recent_exchanges = conversation_context[-3:]  # Last 3 exchanges
+                context_text = "\n".join([
+                    f"Tidligere spørgsmål: {exchange.get('question', '')}"
+                    for exchange in recent_exchanges
+                ])
+            
             # Prepare job details for AI analysis
             job_details = []
             for i, job in enumerate(jobs, 1):
@@ -226,11 +328,14 @@ Job {i}:
             prompt = f"""
 Du er en ekspert jobrådgiver. Analyser følgende jobs baseret på spørgsmålet: "{question}"
 
-VIGTIGT: Alle jobs i databasen er økonomi/regnskab stillinger (controller, bogholder, økonomimedarbejder, etc.). Fokuser derfor på:
+KONTEKST:
+Alle jobs i databasen er økonomi/regnskab stillinger (controller, bogholder, økonomimedarbejder, etc.). Fokuser derfor på:
 - Virksomhedstype (f.eks. pharma, transport, IT, etc.)
 - Lokation
 - Projekttyper eller særlige omstændigheder
 - IKKE jobfunktionen selv
+
+{context_text if context_text else "Ingen tidligere kontekst"}
 
 Her er {len(jobs)} jobs fra databasen:
 
@@ -263,6 +368,27 @@ Svar kun på dansk og hold det kort og direkte.
         except Exception as e:
             logger.error(f"Error getting AI analysis: {e}")
             return "❌ Fejl ved AI analyse."
+    
+    def add_to_conversation_history(self, question: str, results: List[Dict]):
+        """
+        Add current exchange to conversation history
+        """
+        self.conversation_history.append({
+            'question': question,
+            'results_count': len(results),
+            'timestamp': asyncio.get_event_loop().time()
+        })
+        
+        # Keep only the last N exchanges
+        if len(self.conversation_history) > self.max_history_length:
+            self.conversation_history = self.conversation_history[-self.max_history_length:]
+    
+    def clear_conversation_history(self):
+        """
+        Clear conversation history
+        """
+        self.conversation_history = []
+        print("🗑️  Samtalehistorik ryddet")
 
     def show_help(self):
         """
@@ -273,6 +399,11 @@ Svar kun på dansk og hold det kort og direkte.
 
 Du kan stille spørgsmål på dansk om jobs, og systemet vil finde de mest relevante stillinger.
 
+🤖 AI-FORBEDRINGER:
+- AI analyserer søgeresultaterne og giver dig indsigt
+- Systemet husker tidligere spørgsmål i samtalen
+- Opfølgende spørgsmål forstås i kontekst
+
 Eksempler på spørgsmål:
 - "Er der medicinalfirmaer der søger?"
 - "Find jobs inden for IT og software udvikling"
@@ -281,6 +412,11 @@ Eksempler på spørgsmål:
 - "Find jobs med høj CFO score"
 - "Søger virksomheder efter ingeniører?"
 - "Er der remote jobs tilgængelige?"
+
+Opfølgende spørgsmål:
+- "Hvad med i København?" (efter et spørgsmål om jobs)
+- "Er der flere?" (efter at have set resultater)
+- "Hvad med remote muligheder?" (efter et spørgsmål om specifik virksomhed)
 
 🤖 AI Analyse:
 Systemet vil automatisk analysere resultaterne og give dig:
@@ -292,9 +428,26 @@ Kommandoer:
 - 'help' eller 'h' - Vis denne hjælp
 - 'quit' eller 'q' - Afslut programmet
 - 'clear' eller 'c' - Ryd skærmen
+- 'history' eller 'hist' - Vis samtalehistorik
+- 'clear_history' eller 'ch' - Ryd samtalehistorik
 
         """
         print(help_text)
+    
+    def show_conversation_history(self):
+        """
+        Display conversation history
+        """
+        if not self.conversation_history:
+            print("📝 Ingen samtalehistorik")
+            return
+        
+        print("\n=== SAMTALEHISTORIK ===")
+        for i, exchange in enumerate(self.conversation_history, 1):
+            question = exchange.get('question', 'Ukendt spørgsmål')
+            results_count = exchange.get('results_count', 0)
+            print(f"{i}. {question} ({results_count} resultater)")
+        print("=" * 30)
 
 async def main():
     """
@@ -305,7 +458,7 @@ async def main():
         search = InteractiveSemanticSearch()
         
         print("\n" + "="*60)
-        print("🎯 SEMANTISK JOB SØGNING")
+        print("🎯 SEMANTISK JOB SØGNING (AI-Forbedret)")
         print("="*60)
         print("Skriv 'help' for hjælp eller 'quit' for at afslutte\n")
         
@@ -324,20 +477,29 @@ async def main():
                 elif question.lower() in ['clear', 'c']:
                     os.system('clear' if os.name == 'posix' else 'cls')
                     continue
+                elif question.lower() in ['history', 'hist']:
+                    search.show_conversation_history()
+                    continue
+                elif question.lower() in ['clear_history', 'ch']:
+                    search.clear_conversation_history()
+                    continue
                 elif not question:
                     print("⚠️  Indtast venligst et spørgsmål")
                     continue
                 
-                # Perform search
+                # Perform search first (no AI query structuring)
                 results = await search.search_jobs(question, limit=10)
+                
+                # Add to conversation history
+                search.add_to_conversation_history(question, results)
                 
                 # Display results
                 formatted_results = search.format_job_results(results)
                 print(formatted_results)
                 
-                # Get AI analysis
-                print("🤖 Får AI analyse...")
-                ai_analysis = await search.get_ai_analysis(question, results)
+                # Then send results to AI for analysis
+                print("🤖 Får AI analyse af søgeresultaterne...")
+                ai_analysis = await search.get_ai_analysis(question, results, search.conversation_history)
                 print(ai_analysis)
                 
                 print("-" * 60)

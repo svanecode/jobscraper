@@ -53,7 +53,7 @@ Du kan stille spørgsmål som:
 
 ## Hvordan det virker
 
-1. **Embedding Generation**: Spørgsmålet konverteres til en vector embedding ved hjælp af OpenAI's text-embedding-ada-002 model
+1. **Embedding Generation**: Spørgsmålet konverteres til en vector embedding ved hjælp af OpenAI's text-embedding-3-large model
 2. **Vector Search**: Embeddingen bruges til at søge i Supabase-databasen efter jobs med lignende embeddings
 3. **Similarity Scoring**: Jobs rangeres efter deres lighed med spørgsmålet (cosine similarity)
 4. **Resultat Visning**: De mest relevante jobs vises med detaljer som titel, virksomhed, lokation, CFO score og relevans-score

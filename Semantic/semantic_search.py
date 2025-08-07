@@ -56,7 +56,7 @@ class SemanticSearch:
     
     async def generate_embedding(self, text: str) -> Optional[List[float]]:
         """
-        Generate embedding for given text using OpenAI's text-embedding-ada-002 model
+        Generate embedding for given text using OpenAI's text-embedding-3-large model
         
         Args:
             text: Text to embed
@@ -66,7 +66,7 @@ class SemanticSearch:
         """
         try:
             response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
+                model="text-embedding-3-large",
                 input=text
             )
             

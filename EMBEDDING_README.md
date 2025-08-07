@@ -1,6 +1,6 @@
 # Job Embedding System
 
-This directory contains scripts for generating and using vector embeddings for job records in your database. The system uses OpenAI's text-embedding-ada-002 model to create 1536-dimensional embeddings that enable semantic similarity search.
+This directory contains scripts for generating and using vector embeddings for job records in your database. The system uses OpenAI's text-embedding-3-large model to create 3072-dimensional embeddings that enable semantic similarity search.
 
 ## Files Overview
 
@@ -163,7 +163,7 @@ The scripts provide detailed logging:
    - Reduce the batch size
 
 4. **Vector dimension mismatch**
-   - Ensure you're using text-embedding-ada-002 (1536 dimensions)
+   - Ensure you're using text-embedding-3-large (3072 dimensions)
    - Check that the vector column is defined as `vector(1536)`
 
 ### Performance Tips

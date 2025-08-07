@@ -105,7 +105,7 @@ Description: {company} - {title}. """
         """
         try:
             response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
+                model="text-embedding-3-large",
                 input=text
             )
             embedding = response.data[0].embedding

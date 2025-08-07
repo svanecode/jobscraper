@@ -3,7 +3,7 @@
 Job Embedding Generator
 
 This script generates vector embeddings for job records in the database.
-It uses OpenAI's text-embedding-ada-002 model to create embeddings from
+It uses OpenAI's text-embedding-3-large model to create embeddings from
 job titles, descriptions, and company information.
 """
 
@@ -169,7 +169,7 @@ Description: {company} - {title}. """
         """
         try:
             response = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
+                model="text-embedding-3-large",
                 input=text
             )
             
