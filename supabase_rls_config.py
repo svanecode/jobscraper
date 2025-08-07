@@ -284,11 +284,8 @@ class SupabaseRLSClient:
             return False
         
         try:
-            current_time = datetime.now(timezone.utc).isoformat()
-            
             result = self.supabase.table(table_name).update({
-                'deleted_at': None,
-                'last_seen': current_time
+                'deleted_at': None
             }).in_('job_id', job_ids).execute()
             
             logger.info(f"🔄 Restored {len(job_ids)} previously deleted jobs")
