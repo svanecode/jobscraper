@@ -147,22 +147,35 @@ class SupabaseRLSClient:
             # Get existing job IDs to check for duplicates
             job_ids = [job['job_id'] for job in jobs]
             
-            # Check which jobs already exist
-            existing_jobs_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).execute()
-            existing_job_ids = {job['job_id'] for job in existing_jobs_result.data}
+            # Check which jobs already exist and their deletion status
+            existing_jobs_result = self.supabase.table(table_name).select('job_id, deleted_at').in_('job_id', job_ids).execute()
             
-            # Separate new and existing jobs
+            existing_job_ids = set()
+            soft_deleted_job_ids = set()
+            
+            for job in existing_jobs_result.data:
+                job_id = job['job_id']
+                if job.get('deleted_at') is None:
+                    existing_job_ids.add(job_id)
+                else:
+                    soft_deleted_job_ids.add(job_id)
+            
+            # Separate new, existing, and soft-deleted jobs
             new_jobs = []
             existing_jobs = []
+            restored_jobs = []
             
             for job in jobs:
-                if job['job_id'] in existing_job_ids:
+                job_id = job['job_id']
+                if job_id in soft_deleted_job_ids:
+                    restored_jobs.append(job)
+                elif job_id in existing_job_ids:
                     existing_jobs.append(job)
                 else:
                     new_jobs.append(job)
             
             # Log the breakdown
-            logger.info(f"📊 Job analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs")
+            logger.info(f"📊 Job analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs, {len(restored_jobs)} restored jobs")
             
             # Insert only new jobs
             if new_jobs:
@@ -179,9 +192,15 @@ class SupabaseRLSClient:
                 result = self.supabase.table(table_name).insert(jobs_data).execute()
                 logger.info(f"✅ Successfully inserted {len(new_jobs)} new jobs")
             else:
-                logger.info("ℹ️ No new jobs to insert - all jobs already exist")
+                logger.info("ℹ️ No new jobs to insert")
             
-            # Update last_seen for all jobs (both new and existing)
+            # Restore soft-deleted jobs
+            if restored_jobs:
+                restored_job_ids = [job['job_id'] for job in restored_jobs]
+                self.restore_deleted_jobs(restored_job_ids, table_name)
+                logger.info(f"🔄 Restored {len(restored_jobs)} previously deleted jobs")
+            
+            # Update last_seen for all jobs (new, existing, and restored)
             all_job_ids = [job['job_id'] for job in jobs]
             self.update_last_seen(all_job_ids)
             
