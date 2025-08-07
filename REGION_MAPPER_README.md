@@ -1,4 +1,4 @@
-# Region Mapper for Jobindex
+# Region Mapper for Job Scraper
 
 This script maps job locations to regions using the `city_to_region` table and updates the `region` column in the `jobs` table.
 

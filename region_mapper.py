@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Region Mapper for Jobindex
+Region Mapper for Job Scraper
 Maps job locations to regions using the city_to_region table and updates the region column in jobs table
 """
 

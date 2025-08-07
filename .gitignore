@@ -57,8 +57,8 @@ ehthumbs.db
 Thumbs.db
 
 # Scraper output files
-jobindex_playwright_jobs_*.csv
-jobindex_playwright_jobs_*.json
+job_playwright_jobs_*.csv
+job_playwright_jobs_*.json
 
 # Logs
 *.log

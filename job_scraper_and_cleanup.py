@@ -3,7 +3,7 @@
 Job Scraper and Cleanup - Combined Script
 
 This script combines job scraping and cleanup into a single workflow:
-1. Scrapes new jobs from Jobindex
+1. Scrapes new jobs from job websites
 2. Updates last_seen for existing jobs found during scraping
 3. Cleans up old jobs that haven't been seen recently
 
@@ -52,8 +52,8 @@ class JobScraperAndCleanup:
             supabase_key: Supabase API key
             cleanup_hours: Hours after which jobs should be cleaned up (default: 24)
         """
-        self.base_url = "https://www.jobindex.dk"
-        self.search_url = "https://www.jobindex.dk/jobsoegning/kontor"
+        self.base_url = "https://example.com"
+        self.search_url = "https://example.com/jobs"
         self.jobs = []
         self.cleanup_hours = cleanup_hours
         
@@ -359,7 +359,7 @@ class JobScraperAndCleanup:
                 'company': company,  # Leave as None if unknown
                 'location': location,  # Leave as None if unknown
                 'publication_date': publication_date or datetime.now().strftime('%Y-%m-%d'),
-                'job_url': f"https://www.jobindex.dk/vis-job/{job_id}",
+                'job_url': f"https://example.com/job/{job_id}",
                 'company_url': None,  # Will be filled by job_info_scraper if needed
                 'description': description,  # Extract description from listing
             }
@@ -461,7 +461,7 @@ async def main():
         scraper_cleanup = JobScraperAndCleanup()
         
         # Step 1: Scrape jobs
-        logger.info("📥 STEP 1: Scraping jobs from Jobindex")
+        logger.info("📥 STEP 1: Scraping jobs from job websites")
         scraping_success = await scraper_cleanup.scrape_jobs()
         
         if scraping_success and len(scraper_cleanup.jobs) > 0:

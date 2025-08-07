@@ -1,6 +1,6 @@
-# Jobindex Scraper with Supabase Integration
+# Job Scraper with Supabase Integration
 
-A Python scraper that extracts job listings from [Jobindex.dk](https://www.jobindex.dk/jobsoegning/kontor) and saves them directly to Supabase database, with automatic validation, soft deletion of expired jobs, and AI-powered scoring for CFO services.
+A Python scraper that extracts job listings from job websites and saves them directly to Supabase database, with automatic validation, soft deletion of expired jobs, and AI-powered scoring for CFO services.
 
 ## Features
 
@@ -130,10 +130,10 @@ scraper_cleanup.cleanup_old_jobs()
 ### Programmatic Usage
 
 ```python
-from playwright_scraper import JobindexPlaywrightScraper
+from playwright_scraper import JobPlaywrightScraper
 
 # Initialize with Supabase credentials
-scraper = JobindexPlaywrightScraper(
+scraper = JobPlaywrightScraper(
     supabase_url="https://your-project.supabase.co",
     supabase_key="your-anon-key"
 )
@@ -165,8 +165,8 @@ Each job listing includes:
 
 The scraper creates:
 
-1. **JSON file** - `jobindex_playwright_jobs_YYYYMMDD_HHMMSS.json`
-2. **CSV file** - `jobindex_playwright_jobs_YYYYMMDD_HHMMSS.csv`
+1. **JSON file** - `job_playwright_jobs_YYYYMMDD_HHMMSS.json`
+2. **CSV file** - `job_playwright_jobs_YYYYMMDD_HHMMSS.csv`
 3. **Supabase table** - `jobs` (if credentials provided)
 
 ## Testing
@@ -218,12 +218,12 @@ The project uses a single automated workflow that handles the complete job proce
 
 ### Console Output
 ```
-Jobindex Playwright Scraper with Supabase Integration
+Job Playwright Scraper with Supabase Integration
 ============================================================
-Target URL: https://www.jobindex.dk/jobsoegning/kontor
+Target URL: Job website
 ✅ Jobs successfully saved to Supabase!
 
-=== Jobindex Playwright Scraping Summary ===
+=== Job Playwright Scraping Summary ===
 Total jobs: 20
 
 Top companies:
@@ -244,7 +244,7 @@ Results saved to:
   "title": "Projektleder til uddannelsesreform samt udvikling af undervisning og studiemiljø",
   "job_url": "https://candidate.hr-manager.net/ApplicationInit.aspx?cid=5001&ProjectId=189722&DepartmentId=9395&MediaId=5",
   "company": "Professionshøjskolen Absalon",
-  "company_url": "https://www.jobindex.dk/virksomhed/27049/professionshoejskolen-absalon#om-virksomhed",
+  "company_url": "https://example.com/company/profile",
   "location": "Roskilde eller Slagelse",
   "publication_date": "2025-07-26",
   "description": "Her er der mulighed for at spille en central rolle..."
