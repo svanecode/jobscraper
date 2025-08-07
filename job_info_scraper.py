@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class JobInfoScraper:
     def __init__(self, supabase_url=None, supabase_key=None):
-        self.base_url = "https://example.com"
+        self.base_url = "https://www.jobindex.dk"
         
         # Initialize Supabase client
         self.supabase_url = supabase_url or os.getenv('SUPABASE_URL')
@@ -109,7 +109,7 @@ class JobInfoScraper:
         Returns:
             Dictionary with scraped information or None if error
         """
-        job_url = f"https://example.com/job/{job_id}"
+        job_url = f"https://www.jobindex.dk/vis-job/{job_id}"
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -171,8 +171,8 @@ class JobInfoScraper:
                 if not title:
                     try:
                         page_title = await page.title()
-                        if page_title and '| Example' in page_title:
-                            # Extract title from page title (format: "Title - JobID | Example")
+                        if page_title and '| Job' in page_title:
+            # Extract title from page title (format: "Title - JobID | Job")
                             title = page_title.split(' - ')[0].strip()
                             logger.debug(f"Found title from page title: '{title}'")
                     except Exception as e:

@@ -233,8 +233,8 @@ Top companies:
 
 Results saved to:
   Supabase: jobs table
-  JSON: jobindex_playwright_jobs_20250726_175302.json
-  CSV: jobindex_playwright_jobs_20250726_175302.csv
+  JSON: job_playwright_jobs_20250726_175302.json
+  CSV: job_playwright_jobs_20250726_175302.csv
 ```
 
 ### Sample Job Data
@@ -244,7 +244,7 @@ Results saved to:
   "title": "Projektleder til uddannelsesreform samt udvikling af undervisning og studiemiljø",
   "job_url": "https://candidate.hr-manager.net/ApplicationInit.aspx?cid=5001&ProjectId=189722&DepartmentId=9395&MediaId=5",
   "company": "Professionshøjskolen Absalon",
-  "company_url": "https://example.com/company/profile",
+  "company_url": "https://example.com/company/professionshoejskolen-absalon",
   "location": "Roskilde eller Slagelse",
   "publication_date": "2025-07-26",
   "description": "Her er der mulighed for at spille en central rolle..."

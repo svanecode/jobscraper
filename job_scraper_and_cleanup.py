@@ -52,8 +52,8 @@ class JobScraperAndCleanup:
             supabase_key: Supabase API key
             cleanup_hours: Hours after which jobs should be cleaned up (default: 24)
         """
-        self.base_url = "https://example.com"
-        self.search_url = "https://example.com/jobs"
+        self.base_url = "https://www.jobindex.dk"
+        self.search_url = "https://www.jobindex.dk/jobsoegning/kontor"
         self.jobs = []
         self.cleanup_hours = cleanup_hours
         
@@ -359,7 +359,7 @@ class JobScraperAndCleanup:
                 'company': company,  # Leave as None if unknown
                 'location': location,  # Leave as None if unknown
                 'publication_date': publication_date or datetime.now().strftime('%Y-%m-%d'),
-                'job_url': f"https://example.com/job/{job_id}",
+                'job_url': f"https://www.jobindex.dk/vis-job/{job_id}",
                 'company_url': None,  # Will be filled by job_info_scraper if needed
                 'description': description,  # Extract description from listing
             }
