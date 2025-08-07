@@ -112,7 +112,12 @@ class SupabaseRLSClient:
             result = self.supabase.rpc('cleanup_old_jobs', {'hours_threshold': hours_threshold}).execute()
             
             if result.data:
-                deleted_count = result.data[0]
+                # Handle both array and direct integer responses
+                if isinstance(result.data, list) and len(result.data) > 0:
+                    deleted_count = result.data[0]
+                else:
+                    deleted_count = result.data
+                
                 logger.info(f"🧹 Cleaned up {deleted_count} old jobs (threshold: {hours_threshold} hours)")
                 return deleted_count
             else:
