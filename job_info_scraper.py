@@ -180,272 +180,272 @@ class JobInfoScraper:
             
             # Extract job information
             job_info = {}
-                
-                # Extract job title - use proper selectors and clean up
-                title = None
-                
-                # First try the main job title in h4 tag
+            
+            # Extract job title - use proper selectors and clean up
+            title = None
+            
+            # First try the main job title in h4 tag
+            try:
+                title_element = await page.query_selector('h4 a')
+                if title_element:
+                    title = await title_element.inner_text()
+                    if title and title.strip():
+                        title = title.strip()
+                        logger.debug(f"Found title in h4: '{title}'")
+            except Exception as e:
+                logger.debug(f"Error getting title from h4: {e}")
+            
+            # If no title found, try the sr-only h1 (but clean it up)
+            if not title:
                 try:
-                    title_element = await page.query_selector('h4 a')
+                    title_element = await page.query_selector('h1.sr-only')
                     if title_element:
                         title = await title_element.inner_text()
                         if title and title.strip():
+                            # Remove "Jobannonce: " prefix if present
                             title = title.strip()
-                            logger.debug(f"Found title in h4: '{title}'")
+                            if title.startswith('Jobannonce: '):
+                                title = title[12:]  # Remove "Jobannonce: " prefix
+                            logger.debug(f"Found title in sr-only h1: '{title}'")
                 except Exception as e:
-                    logger.debug(f"Error getting title from h4: {e}")
-                
-                # If no title found, try the sr-only h1 (but clean it up)
-                if not title:
-                    try:
-                        title_element = await page.query_selector('h1.sr-only')
-                        if title_element:
-                            title = await title_element.inner_text()
-                            if title and title.strip():
-                                # Remove "Jobannonce: " prefix if present
-                                title = title.strip()
-                                if title.startswith('Jobannonce: '):
-                                    title = title[12:]  # Remove "Jobannonce: " prefix
-                                logger.debug(f"Found title in sr-only h1: '{title}'")
-                    except Exception as e:
-                        logger.debug(f"Error getting title from sr-only h1: {e}")
-                
-                # If still no title, try the page title
-                if not title:
-                    try:
-                        page_title = await page.title()
-                        if page_title and '| Job' in page_title:
-            # Extract title from page title (format: "Title - JobID | Job")
-                            title = page_title.split(' - ')[0].strip()
-                            logger.debug(f"Found title from page title: '{title}'")
-                    except Exception as e:
-                        logger.debug(f"Error getting title from page title: {e}")
-                
-                job_info['title'] = title
-                
-                # Extract company name - use the proper selector
-                company_name = None
-                company_url = None
-                
-                # Try the company div in the toolbar (newer format)
+                    logger.debug(f"Error getting title from sr-only h1: {e}")
+            
+            # If still no title, try the page title
+            if not title:
                 try:
-                    company_element = await page.query_selector('.jix-toolbar-top__company')
-                    if company_element:
-                        company_text = await company_element.inner_text()
-                        if company_text and company_text.strip():
-                            company_text = company_text.strip()
-                            # Handle "Company søger for kunde" format
-                            if ' søger for kunde' in company_text:
-                                company_name = company_text.replace(' søger for kunde', '').strip()
-                            else:
-                                company_name = company_text
-                            logger.debug(f"Found company in toolbar: '{company_name}'")
-                            
-                            # Try to get company URL from the link
-                            company_link = await company_element.query_selector('a')
-                            if company_link:
-                                company_url = await company_link.get_attribute('href')
-                                logger.debug(f"Found company URL: '{company_url}'")
+                    page_title = await page.title()
+                    if page_title and '| Job' in page_title:
+                        # Extract title from page title (format: "Title - JobID | Job")
+                        title = page_title.split(' - ')[0].strip()
+                        logger.debug(f"Found title from page title: '{title}'")
                 except Exception as e:
-                    logger.debug(f"Error getting company from toolbar: {e}")
-                
-                # If no company found, try to find it in the job link
-                if not company_name:
-                    try:
-                        job_link_element = await page.query_selector('h4 a')
-                        if job_link_element:
-                            href = await job_link_element.get_attribute('href')
-                            if href and 'frivilligjob.dk' in href:
-                                # This is a volunteer job, extract company from the link or title
-                                if title and ' - ' in title:
-                                    company_name = title.split(' - ')[-1].strip()
-                                    logger.debug(f"Extracted company from title: '{company_name}'")
-                    except Exception as e:
-                        logger.debug(f"Error extracting company from job link: {e}")
-                
-                # If still no company, try to find it in the page text
-                if not company_name:
-                    try:
-                        page_text = await page.inner_text('body')
+                    logger.debug(f"Error getting title from page title: {e}")
+            
+            job_info['title'] = title
+            
+            # Extract company name - use the proper selector
+            company_name = None
+            company_url = None
+            
+            # Try the company div in the toolbar (newer format)
+            try:
+                company_element = await page.query_selector('.jix-toolbar-top__company')
+                if company_element:
+                    company_text = await company_element.inner_text()
+                    if company_text and company_text.strip():
+                        company_text = company_text.strip()
+                        # Handle "Company søger for kunde" format
+                        if ' søger for kunde' in company_text:
+                            company_name = company_text.replace(' søger for kunde', '').strip()
+                        else:
+                            company_name = company_text
+                        logger.debug(f"Found company in toolbar: '{company_name}'")
                         
-                        # Look for specific company patterns
-                        company_patterns = [
-                            r'Mental Talk',  # Specific company from the example
-                            r'([A-ZÆØÅ][a-zæøå\s&]+?)\s*-\s*([A-ZÆØÅ][a-zæøå\s&]+?)\s*-\s*([A-ZÆØÅ][a-zæøå\s&]+?)',  # Pattern with dashes
-                            r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+A/S',  # Company with A/S
-                            r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+APS',  # Company with APS
-                        ]
-                        
-                        for pattern in company_patterns:
-                            matches = re.findall(pattern, page_text, re.IGNORECASE)
-                            if matches:
-                                if isinstance(matches[0], tuple):
-                                    potential_company = ' '.join(matches[0]).strip()
-                                else:
-                                    potential_company = matches[0].strip()
-                                
-                                # Filter out job titles and navigation text
-                                if not any(keyword in potential_company.lower() for keyword in ['specialist', 'assistant', 'worker', 'manager', 'consultant', 'analyst', 'coordinator', 'bæredygtighed', 'indkøb', 'gem', 'del', 'kopier']):
-                                    company_name = potential_company
-                                    logger.debug(f"Found company via text pattern: '{company_name}'")
-                                    break
-                    except Exception as e:
-                        logger.debug(f"Error finding company in text: {e}")
-                
-                job_info['company'] = company_name
-                job_info['company_url'] = company_url
-                
-                # Extract job description - use the proper selector
-                description = None
-                
-                # Try to find the description in the job content area
+                        # Try to get company URL from the link
+                        company_link = await company_element.query_selector('a')
+                        if company_link:
+                            company_url = await company_link.get_attribute('href')
+                            logger.debug(f"Found company URL: '{company_url}'")
+            except Exception as e:
+                logger.debug(f"Error getting company from toolbar: {e}")
+            
+            # If no company found, try to find it in the job link
+            if not company_name:
                 try:
-                    # First try the traditional .jix_robotjob-inner selector
-                    desc_element = await page.query_selector('.jix_robotjob-inner p')
-                    if desc_element:
-                        description = await desc_element.inner_text()
-                        if description and description.strip():
-                            description = description.strip()
-                            logger.debug(f"Found description in .jix_robotjob-inner p tag: '{description[:100]}...'")
+                    job_link_element = await page.query_selector('h4 a')
+                    if job_link_element:
+                        href = await job_link_element.get_attribute('href')
+                        if href and 'frivilligjob.dk' in href:
+                            # This is a volunteer job, extract company from the link or title
+                            if title and ' - ' in title:
+                                company_name = title.split(' - ')[-1].strip()
+                                logger.debug(f"Extracted company from title: '{company_name}'")
                 except Exception as e:
-                    logger.debug(f"Error getting description from .jix_robotjob-inner p tag: {e}")
-                
-                # If no description found, try the PaidJob-inner structure (newer format)
-                if not description:
-                    try:
-                        job_content = await page.query_selector('.PaidJob-inner')
-                        if job_content:
-                            # Get all paragraph elements within PaidJob-inner
-                            p_elements = await job_content.query_selector_all('p')
-                            if p_elements:
-                                # Combine all paragraph text
-                                desc_parts = []
-                                for p_elem in p_elements:
-                                    p_text = await p_elem.inner_text()
-                                    if p_text and p_text.strip():
-                                        p_text = p_text.strip()
-                                        # Skip very short paragraphs that might be metadata
-                                        if len(p_text) > 10:
-                                            desc_parts.append(p_text)
-                                
-                                if desc_parts:
-                                    description = ' '.join(desc_parts)
-                                    logger.debug(f"Found description in PaidJob-inner p tags: '{description[:100]}...'")
-                    except Exception as e:
-                        logger.debug(f"Error getting description from PaidJob-inner: {e}")
-                
-                # If still no description found, try the traditional .jix_robotjob-inner approach
-                if not description:
-                    try:
-                        job_content = await page.query_selector('.jix_robotjob-inner')
-                        if job_content:
-                            # Get all text from the job content area
-                            content_text = await job_content.inner_text()
-                            
-                            # Look for the actual job description (not metadata)
-                            lines = content_text.split('\n')
-                            for line in lines:
-                                line = line.strip()
-                                if line and len(line) > 20:
-                                    # Skip metadata lines
-                                    if any(skip in line.lower() for skip in ['indrykket:', 'hentet fra', 'se jobbet', 'se rejsetid']):
-                                        continue
-                                    # Skip if it's just the title or company
-                                    if line == title or line == company_name:
-                                        continue
-                                    # This looks like a description
-                                    description = line
-                                    logger.debug(f"Found description in job content: '{description[:100]}...'")
-                                    break
-                    except Exception as e:
-                        logger.debug(f"Error getting description from job content: {e}")
-                
-                # If still no description, try to find it in the page text
-                if not description:
-                    try:
-                        page_text = await page.inner_text('body')
-                        
-                        # Look for job description patterns
-                        desc_patterns = [
-                            r'At bidrage.*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:Vi søger|We are looking for|We seek).*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:Jobbet|The position|The role).*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:Ansvar|Responsibilities|Duties).*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:We are|Vi er).*?(?:seeking|søger).*?(?=\n\n|\n[A-Z]|$)',
-                            r'(?:We invite you|Vi inviterer dig).*?(?=\n\n|\n[A-Z]|$)',
-                        ]
-                        
-                        for pattern in desc_patterns:
-                            matches = re.findall(pattern, page_text, re.DOTALL | re.IGNORECASE)
-                            if matches:
-                                potential_desc = matches[0].strip()
-                                if len(potential_desc) > 20:
-                                    description = re.sub(r'\s+', ' ', potential_desc)
-                                    logger.debug(f"Found description via text pattern: '{description[:100]}...'")
-                                    break
-                    except Exception as e:
-                        logger.debug(f"Error finding description via text patterns: {e}")
-                
-                # Clean up description - remove common unwanted text
-                if description:
-                    # Remove common navigation and metadata text
-                    unwanted_patterns = [
-                        r'Indrykket:.*?(?=\n|$)',
-                        r'Hentet fra.*?(?=\n|$)',
-                        r'Se jobbet.*?(?=\n|$)',
-                        r'Anbefalede job.*?(?=\n|$)',
-                        r'Gem.*?(?=\n|$)',
-                        r'Del.*?(?=\n|$)',
-                        r'Kopier.*?(?=\n|$)',
-                        r'30\.400 job i dag.*?(?=\n|$)',
-                        r'For jobsøgere.*?(?=\n|$)',
-                        r'For arbejdsgivere.*?(?=\n|$)',
-                        r'Jobsøgning.*?(?=\n|$)',
-                        r'Arbejdspladser.*?(?=\n|$)',
-                        r'Test dig selv.*?(?=\n|$)',
-                        r'Guides.*?(?=\n|$)',
-                        r'Kurser.*?(?=\n|$)',
-                        r'Log ind.*?(?=\n|$)',
-                        r'Opret profil.*?(?=\n|$)',
+                    logger.debug(f"Error extracting company from job link: {e}")
+            
+            # If still no company, try to find it in the page text
+            if not company_name:
+                try:
+                    page_text = await page.inner_text('body')
+                    
+                    # Look for specific company patterns
+                    company_patterns = [
+                        r'Mental Talk',  # Specific company from the example
+                        r'([A-ZÆØÅ][a-zæøå\s&]+?)\s*-\s*([A-ZÆØÅ][a-zæøå\s&]+?)\s*-\s*([A-ZÆØÅ][a-zæøå\s&]+?)',  # Pattern with dashes
+                        r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+A/S',  # Company with A/S
+                        r'([A-ZÆØÅ][a-zæøå\s&]+?)\s+APS',  # Company with APS
                     ]
                     
-                    for pattern in unwanted_patterns:
-                        description = re.sub(pattern, '', description, flags=re.IGNORECASE)
-                    
-                    # Clean up extra whitespace
-                    description = re.sub(r'\s+', ' ', description.strip())
-                    
-                    # Only keep if it's still meaningful
-                    if len(description) < 10:
-                        description = None
-                
-                job_info['description'] = description
-                
-                # Extract location
-                location = None
-                try:
-                    location_element = await page.query_selector('.jix_robotjob--area')
-                    if location_element:
-                        location = await location_element.inner_text()
-                        if location and location.strip():
-                            location = location.strip()
-                            logger.debug(f"Found location: '{location}'")
+                    for pattern in company_patterns:
+                        matches = re.findall(pattern, page_text, re.IGNORECASE)
+                        if matches:
+                            if isinstance(matches[0], tuple):
+                                potential_company = ' '.join(matches[0]).strip()
+                            else:
+                                potential_company = matches[0].strip()
+                            
+                            # Filter out job titles and navigation text
+                            if not any(keyword in potential_company.lower() for keyword in ['specialist', 'assistant', 'worker', 'manager', 'consultant', 'analyst', 'coordinator', 'bæredygtighed', 'indkøb', 'gem', 'del', 'kopier']):
+                                company_name = potential_company
+                                logger.debug(f"Found company via text pattern: '{company_name}'")
+                                break
                 except Exception as e:
-                    logger.debug(f"Error getting location: {e}")
+                    logger.debug(f"Error finding company in text: {e}")
+            
+            job_info['company'] = company_name
+            job_info['company_url'] = company_url
+            
+            # Extract job description - use the proper selector
+            description = None
+            
+            # Try to find the description in the job content area
+            try:
+                # First try the traditional .jix_robotjob-inner selector
+                desc_element = await page.query_selector('.jix_robotjob-inner p')
+                if desc_element:
+                    description = await desc_element.inner_text()
+                    if description and description.strip():
+                        description = description.strip()
+                        logger.debug(f"Found description in .jix_robotjob-inner p tag: '{description[:100]}...'")
+            except Exception as e:
+                logger.debug(f"Error getting description from .jix_robotjob-inner p tag: {e}")
+            
+            # If no description found, try the PaidJob-inner structure (newer format)
+            if not description:
+                try:
+                    job_content = await page.query_selector('.PaidJob-inner')
+                    if job_content:
+                        # Get all paragraph elements within PaidJob-inner
+                        p_elements = await job_content.query_selector_all('p')
+                        if p_elements:
+                            # Combine all paragraph text
+                            desc_parts = []
+                            for p_elem in p_elements:
+                                p_text = await p_elem.inner_text()
+                                if p_text and p_text.strip():
+                                    p_text = p_text.strip()
+                                    # Skip very short paragraphs that might be metadata
+                                    if len(p_text) > 10:
+                                        desc_parts.append(p_text)
+                            
+                            if desc_parts:
+                                description = ' '.join(desc_parts)
+                                logger.debug(f"Found description in PaidJob-inner p tags: '{description[:100]}...'")
+                except Exception as e:
+                    logger.debug(f"Error getting description from PaidJob-inner: {e}")
+            
+            # If still no description found, try the traditional .jix_robotjob-inner approach
+            if not description:
+                try:
+                    job_content = await page.query_selector('.jix_robotjob-inner')
+                    if job_content:
+                        # Get all text from the job content area
+                        content_text = await job_content.inner_text()
+                        
+                        # Look for the actual job description (not metadata)
+                        lines = content_text.split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if line and len(line) > 20:
+                                # Skip metadata lines
+                                if any(skip in line.lower() for skip in ['indrykket:', 'hentet fra', 'se jobbet', 'se rejsetid']):
+                                    continue
+                                # Skip if it's just the title or company
+                                if line == title or line == company_name:
+                                    continue
+                                # This looks like a description
+                                description = line
+                                logger.debug(f"Found description in job content: '{description[:100]}...'")
+                                break
+                except Exception as e:
+                    logger.debug(f"Error getting description from job content: {e}")
+            
+            # If still no description, try to find it in the page text
+            if not description:
+                try:
+                    page_text = await page.inner_text('body')
+                    
+                    # Look for job description patterns
+                    desc_patterns = [
+                        r'At bidrage.*?(?=\n\n|\n[A-Z]|$)',
+                        r'(?:Vi søger|We are looking for|We seek).*?(?=\n\n|\n[A-Z]|$)',
+                        r'(?:Jobbet|The position|The role).*?(?=\n\n|\n[A-Z]|$)',
+                        r'(?:Ansvar|Responsibilities|Duties).*?(?=\n\n|\n[A-Z]|$)',
+                        r'(?:We are|Vi er).*?(?:seeking|søger).*?(?=\n\n|\n[A-Z]|$)',
+                        r'(?:We invite you|Vi inviterer dig).*?(?=\n\n|\n[A-Z]|$)',
+                    ]
+                    
+                    for pattern in desc_patterns:
+                        matches = re.findall(pattern, page_text, re.DOTALL | re.IGNORECASE)
+                        if matches:
+                            potential_desc = matches[0].strip()
+                            if len(potential_desc) > 20:
+                                description = re.sub(r'\s+', ' ', potential_desc)
+                                logger.debug(f"Found description via text pattern: '{description[:100]}...'")
+                                break
+                except Exception as e:
+                    logger.debug(f"Error finding description via text patterns: {e}")
+            
+            # Clean up description - remove common unwanted text
+            if description:
+                # Remove common navigation and metadata text
+                unwanted_patterns = [
+                    r'Indrykket:.*?(?=\n|$)',
+                    r'Hentet fra.*?(?=\n|$)',
+                    r'Se jobbet.*?(?=\n|$)',
+                    r'Anbefalede job.*?(?=\n|$)',
+                    r'Gem.*?(?=\n|$)',
+                    r'Del.*?(?=\n|$)',
+                    r'Kopier.*?(?=\n|$)',
+                    r'30\.400 job i dag.*?(?=\n|$)',
+                    r'For jobsøgere.*?(?=\n|$)',
+                    r'For arbejdsgivere.*?(?=\n|$)',
+                    r'Jobsøgning.*?(?=\n|$)',
+                    r'Arbejdspladser.*?(?=\n|$)',
+                    r'Test dig selv.*?(?=\n|$)',
+                    r'Guides.*?(?=\n|$)',
+                    r'Kurser.*?(?=\n|$)',
+                    r'Log ind.*?(?=\n|$)',
+                    r'Opret profil.*?(?=\n|$)',
+                ]
                 
-                if location:
-                    job_info['location'] = location
+                for pattern in unwanted_patterns:
+                    description = re.sub(pattern, '', description, flags=re.IGNORECASE)
                 
-                logger.info(f"Successfully scraped info for job {job_id}")
-                logger.info(f"Title: '{job_info.get('title')}'")
-                logger.info(f"Company: '{job_info.get('company')}'")
-                description = job_info.get('description', '')
-                if description:
-                    logger.info(f"Description: '{description[:100]}...'")
-                else:
-                    logger.info(f"Description: '{description}'")
-                logger.info(f"Location: '{job_info.get('location')}'")
+                # Clean up extra whitespace
+                description = re.sub(r'\s+', ' ', description.strip())
                 
+                # Only keep if it's still meaningful
+                if len(description) < 10:
+                    description = None
+            
+            job_info['description'] = description
+            
+            # Extract location
+            location = None
+            try:
+                location_element = await page.query_selector('.jix_robotjob--area')
+                if location_element:
+                    location = await location_element.inner_text()
+                    if location and location.strip():
+                        location = location.strip()
+                        logger.debug(f"Found location: '{location}'")
+            except Exception as e:
+                logger.debug(f"Error getting location: {e}")
+            
+            if location:
+                job_info['location'] = location
+            
+            logger.info(f"Successfully scraped info for job {job_id}")
+            logger.info(f"Title: '{job_info.get('title')}'")
+            logger.info(f"Company: '{job_info.get('company')}'")
+            description = job_info.get('description', '')
+            if description:
+                logger.info(f"Description: '{description[:100]}...'")
+            else:
+                logger.info(f"Description: '{description}'")
+            logger.info(f"Location: '{job_info.get('location')}'")
+            
             return job_info
             
         except Exception as e:
