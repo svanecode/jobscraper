@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 class JobInfoScraper:
     def __init__(self, supabase_url=None, supabase_key=None):
         self.base_url = "https://www.jobindex.dk"
+        # Playwright resources
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
         
         # Initialize Supabase client
         self.supabase_url = supabase_url or os.getenv('SUPABASE_URL')
@@ -43,6 +48,38 @@ class JobInfoScraper:
             self.supabase = None
             logger.error("Supabase credentials not provided. Cannot proceed.")
             raise ValueError("Supabase credentials required")
+
+    async def setup_browser(self):
+        if self._browser is not None:
+            return
+        from playwright.async_api import async_playwright
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor'
+            ]
+        )
+        self._context = await self._browser.new_context(
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport={'width': 1920, 'height': 1080}
+        )
+        self._page = await self._context.new_page()
+
+    async def teardown_browser(self):
+        try:
+            if self._browser:
+                await self._browser.close()
+        finally:
+            self._page = None
+            self._context = None
+            if self._playwright:
+                await self._playwright.stop()
+            self._playwright = None
     
     def get_jobs_with_missing_info(self) -> List[Dict]:
         """
@@ -55,9 +92,17 @@ class JobInfoScraper:
         """
         try:
             # Query for jobs with missing information AND no job_info timestamp, ordered by created_at descending
-            response = self.supabase.table('jobs').select('*').or_(
-                'company.is.null,company.eq.,company_url.is.null,company_url.eq.,description.is.null,description.eq.'
-            ).is_('deleted_at', 'null').is_('job_info', 'null').order('created_at', desc=True).execute()
+            # Build robust filter for missing fields (null or empty strings)
+            response = (
+                self.supabase
+                .table('jobs')
+                .select('*')
+                .is_('deleted_at', 'null')
+                .is_('job_info', 'null')
+                .or_('company.is.null,company.eq.,company_url.is.null,company_url.eq.,description.is.null,description.eq.')
+                .order('created_at', desc=True)
+                .execute()
+            )
             
             if response.data:
                 logger.info(f"Found {len(response.data)} jobs with missing information and no job_info timestamp (ordered by newest first)")
@@ -84,9 +129,17 @@ class JobInfoScraper:
         """
         try:
             # Query for jobs with missing information AND no job_info timestamp, ordered by created_at descending, limited
-            response = self.supabase.table('jobs').select('*').or_(
-                'company.is.null,company.eq.,company_url.is.null,company_url.eq.,description.is.null,description.eq.'
-            ).is_('deleted_at', 'null').is_('job_info', 'null').order('created_at', desc=True).limit(limit).execute()
+            response = (
+                self.supabase
+                .table('jobs')
+                .select('*')
+                .is_('deleted_at', 'null')
+                .is_('job_info', 'null')
+                .or_('company.is.null,company.eq.,company_url.is.null,company_url.eq.,description.is.null,description.eq.')
+                .order('created_at', desc=True)
+                .limit(limit)
+                .execute()
+            )
             
             if response.data:
                 logger.info(f"Found {len(response.data)} jobs with missing information and no job_info timestamp (newest {limit}, ordered by newest first)")
@@ -99,7 +152,7 @@ class JobInfoScraper:
             logger.error(f"Error fetching jobs with missing info (limited): {e}")
             return []
     
-    async def scrape_job_info(self, job_id: str) -> Optional[Dict]:
+    async def scrape_job_info(self, job_id: str, page=None) -> Optional[Dict]:
         """
         Scrape detailed job information from a specific job URL
         
@@ -111,22 +164,11 @@ class JobInfoScraper:
         """
         job_url = f"https://www.jobindex.dk/vis-job/{job_id}"
         
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    '--no-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor'
-                ]
-            )
-            context = await browser.new_context(
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                viewport={'width': 1920, 'height': 1080}
-            )
-            page = await context.new_page()
+        # Support reusing a shared page if provided/initialized
+        external_page = page is not None
+        if page is None:
+            await self.setup_browser()
+            page = self._page
             
             try:
                 logger.info(f"Scraping job info from: {job_url}")
@@ -409,7 +451,9 @@ class JobInfoScraper:
                 logger.error(f"Error scraping job {job_id}: {e}")
                 return None
             finally:
-                await browser.close()
+                # Only close if we created a temporary browser for this call
+                if not external_page:
+                    await self.teardown_browser()
     
     def update_job_info(self, job_id: str, job_info: Dict) -> bool:
         """
@@ -465,7 +509,7 @@ class JobInfoScraper:
     
 
     
-    async def process_jobs_with_missing_info(self, max_jobs=None, delay=1.0, newest_first=True):
+    async def process_jobs_with_missing_info(self, max_jobs=None, delay=1.0, newest_first=True, concurrency: int = 3):
         """
         Process jobs with missing information, prioritizing newest jobs
         
@@ -495,65 +539,54 @@ class JobInfoScraper:
             else:
                 logger.info(f"Processing {len(jobs)} jobs with missing information")
         
-        # Process jobs
+        # Process jobs with limited concurrency (per-job new page)
         total_processed = 0
         total_updated = 0
         total_errors = 0
-        
-        for i, job in enumerate(jobs, 1):
+
+        await self.setup_browser()
+
+        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+
+        async def process_single(job_idx: int, job: Dict):
+            nonlocal total_processed, total_updated, total_errors
             job_id = job.get('job_id')
             if not job_id:
-                logger.warning(f"Job without job_id found, skipping")
-                continue
-            
-            # Check if job already has job_info timestamp (already processed)
+                logger.warning("Job without job_id found, skipping")
+                return
+
             if job.get('job_info'):
                 logger.info(f"Skipping job {job_id} - already processed (job_info timestamp: {job.get('job_info')})")
-                continue
-            
-            logger.info(f"Processing job {i}/{len(jobs)}: {job_id}")
-            
-            # Check what information is missing
-            missing_fields = []
-            if not job.get('company') or not job.get('company').strip():
-                missing_fields.append('company')
-            if not job.get('company_url') or not job.get('company_url').strip():
-                missing_fields.append('company_url')
-            if not job.get('description') or not job.get('description').strip():
-                missing_fields.append('description')
-            
-            logger.info(f"Missing fields for job {job_id}: {missing_fields}")
-            
-            # Scrape job information
-            job_info = await self.scrape_job_info(job_id)
-            
-            if job_info:
-                # Update database
-                if self.update_job_info(job_id, job_info):
-                    total_updated += 1
-                    logger.info(f"Successfully updated job {job_id}")
-                else:
+                return
+
+            async with semaphore:
+                logger.info(f"Processing job {job_idx}/{len(jobs)}: {job_id}")
+
+                # Open a dedicated page for this job to allow concurrency
+                page = await self._context.new_page()
+                try:
+                    job_info = await self.scrape_job_info(job_id, page=page)
+                    if job_info and self.update_job_info(job_id, job_info):
+                        total_updated += 1
+                        logger.info(f"Successfully updated job {job_id}")
+                    else:
+                        total_errors += 1
+                        logger.error(f"Failed to update/scrape job {job_id}")
+                except Exception as e:
                     total_errors += 1
-                    logger.error(f"Failed to update job {job_id}")
-            else:
-                total_errors += 1
-                logger.error(f"Failed to scrape job {job_id}")
-            
-            total_processed += 1
-            
-            # Progress update
-            progress = (total_processed / len(jobs)) * 100
-            logger.info(f"Progress: {progress:.1f}% ({total_processed}/{len(jobs)})")
-            
-            # Add delay between requests
-            if i < len(jobs):
-                await asyncio.sleep(delay)
-        
-        # Final summary
+                    logger.error(f"Error processing job {job_id}: {e}")
+                finally:
+                    total_processed += 1
+                    await page.close()
+
+        tasks = [process_single(i, job) for i, job in enumerate(jobs, 1)]
+        await asyncio.gather(*tasks)
+
         logger.info("=== PROCESSING COMPLETE ===")
         logger.info(f"Total jobs processed: {total_processed}")
         logger.info(f"Successfully updated: {total_updated}")
         logger.info(f"Errors: {total_errors}")
+        await self.teardown_browser()
     
     def get_missing_info_stats(self) -> Dict:
         """

@@ -10,6 +10,7 @@ import logging
 import os
 from typing import List, Dict
 from supabase import create_client, Client
+from datetime import datetime, timezone
 
 # Load environment variables from .env file if it exists
 try:
@@ -64,12 +65,23 @@ class JobReactivator:
                 logger.info("No deleted jobs found")
                 return []
             
-            # Filter jobs where last_seen > deleted_at
+            # Filter jobs where last_seen > deleted_at using proper datetime parsing
             jobs_to_reactivate = []
+            def parse_ts(value):
+                if not value:
+                    return None
+                # Handle ISO strings with trailing 'Z'
+                if isinstance(value, str) and value.endswith('Z'):
+                    value = value.replace('Z', '+00:00')
+                try:
+                    return datetime.fromisoformat(value)
+                except Exception:
+                    return None
             for job in response.data:
-                deleted_at = job.get('deleted_at')
-                last_seen = job.get('last_seen')
-                
+                deleted_at_raw = job.get('deleted_at')
+                last_seen_raw = job.get('last_seen')
+                deleted_at = parse_ts(deleted_at_raw)
+                last_seen = parse_ts(last_seen_raw)
                 if deleted_at and last_seen and last_seen > deleted_at:
                     jobs_to_reactivate.append(job)
             

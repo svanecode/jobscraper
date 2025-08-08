@@ -117,9 +117,19 @@ class JobScraperAndCleanup:
                     'Accept-Encoding': 'gzip, deflate',
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1'
-                }
+                },
+                record_video_dir=None,
+                bypass_csp=True
             )
             page = await context.new_page()
+
+            # Block heavy assets to speed up navigation
+            async def route_interceptor(route):
+                req = route.request
+                if req.resource_type in {"image", "font", "media", "stylesheet"}:
+                    return await route.abort()
+                return await route.continue_()
+            await context.route("**/*", route_interceptor)
             
             try:
                 logger.info(f"🔍 Starting job scraping from: {self.search_url}")
@@ -179,10 +189,50 @@ class JobScraperAndCleanup:
                 page_num = 1
                 has_more_pages = True
                 max_pages = None  # No limit - scrape all available pages
+
+                # Helper: wait for at least one job selector to appear before parsing
+                async def wait_for_any_selector(selectors, timeout_ms=10000):
+                    for selector in selectors:
+                        try:
+                            await page.wait_for_selector(selector, timeout=timeout_ms, state='attached')
+                            return True
+                        except Exception:
+                            continue
+                    return False
                 
                 while has_more_pages and (max_pages is None or page_num <= max_pages):
                     logger.info(f"📄 Scraping page {page_num}")
                     
+                    # Ensure content is ready
+                    ready = await wait_for_any_selector([
+                        '[id^="jobad-wrapper-"]', '.job-listing', '.job-item',
+                        '[data-testid="job-listing"]', '.job-card', '.job-ad'
+                    ], timeout_ms=15000)
+
+                    # Dismiss cookie banners if present
+                    async def try_dismiss_cookies():
+                        try:
+                            # Common cookie buttons
+                            selectors = [
+                                'button:has-text("Accepter")',
+                                'button:has-text("Acceptér")',
+                                'button:has-text("OK")',
+                                'text="Accepter alle"',
+                            ]
+                            for sel in selectors:
+                                try:
+                                    el = await page.query_selector(sel)
+                                    if el:
+                                        await el.click()
+                                        await asyncio.sleep(0.5)
+                                        break
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+
+                    await try_dismiss_cookies()
+
                     # Extract jobs from current page
                     page_jobs = await self.extract_jobs_from_page(page)
                     if page_jobs:
@@ -209,9 +259,11 @@ class JobScraperAndCleanup:
                         # Navigate to next page with robust timeout
                         await page.goto(next_url, wait_until='domcontentloaded', timeout=30000)
                         await page.wait_for_load_state('domcontentloaded', timeout=10000)
+
+                        await try_dismiss_cookies()
                         
                         # Small delay between pages to be respectful
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(0.5)
                         
                         page_num += 1
                         logger.info(f"Successfully navigated to page {page_num}")
@@ -222,8 +274,21 @@ class JobScraperAndCleanup:
                             has_more_pages = False
                             
                     except Exception as e:
-                        logger.warning(f"Failed to navigate to page {page_num + 1}: {e}")
-                        has_more_pages = False
+                        logger.warning(f"Failed to navigate to page {page_num + 1} via URL: {e}")
+                        # Fallback: try clicking a "next" link/button
+                        try:
+                            next_loc = page.get_by_text("Næste", exact=False)
+                            if await next_loc.count() > 0:
+                                await next_loc.first.click()
+                                await page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                await try_dismiss_cookies()
+                                page_num += 1
+                                logger.info(f"Navigated to page {page_num} via next button")
+                            else:
+                                has_more_pages = False
+                        except Exception as e2:
+                            logger.warning(f"Fallback next click failed: {e2}")
+                            has_more_pages = False
                 
                 logger.info(f"🎉 Scraping completed! Total jobs found: {total_jobs} across {page_num - 1} pages")
                 logger.info("⏳ Now proceeding to save jobs and update last_seen...")

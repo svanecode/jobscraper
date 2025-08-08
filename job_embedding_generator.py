@@ -13,8 +13,7 @@ import os
 import time
 from typing import List, Dict, Optional
 from supabase import create_client, Client
-from openai import OpenAI
-import numpy as np
+from openai import AsyncOpenAI
 
 # Load environment variables from .env file if it exists
 try:
@@ -48,7 +47,7 @@ class JobEmbeddingGenerator:
         # Initialize OpenAI client
         self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         if self.openai_api_key:
-            self.openai_client = OpenAI(api_key=self.openai_api_key)
+            self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
             logger.info("OpenAI client initialized")
         else:
             self.openai_client = None
@@ -168,7 +167,7 @@ Description: {company} - {title}. """
             List of floats representing the embedding vector
         """
         try:
-            response = self.openai_client.embeddings.create(
+            response = await self.openai_client.embeddings.create(
                 model="text-embedding-3-large",
                 input=text
             )
@@ -181,6 +180,20 @@ Description: {company} - {title}. """
                 
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
+            return None
+
+    async def generate_embeddings_batch(self, texts: List[str], model: str = "text-embedding-3-large") -> Optional[List[List[float]]]:
+        """
+        Generate embeddings for a batch of texts in one API call.
+        """
+        try:
+            response = await self.openai_client.embeddings.create(
+                model=model,
+                input=texts
+            )
+            return [item.embedding for item in response.data]
+        except Exception as e:
+            logger.error(f"Batch embedding error: {e}")
             return None
     
     def update_job_embedding(self, job_id: int, embedding: List[float]) -> bool:
@@ -198,9 +211,10 @@ Description: {company} - {title}. """
             # Convert embedding to proper format for Supabase
             embedding_array = list(embedding)  # Ensure it's a list
             
+            from datetime import datetime, timezone
             response = self.supabase.table('jobs').update({
                 'embedding': embedding_array,
-                'embedding_created_at': 'now()'
+                'embedding_created_at': datetime.now(timezone.utc).isoformat()
             }).eq('id', job_id).execute()
             
             if response.data:
@@ -269,38 +283,58 @@ Description: {company} - {title}. """
         
         logger.info(f"Starting to generate embeddings for {len(jobs)} jobs with CFO score >= 1")
         
-        # Process jobs in batches
+        # Process jobs in batches with single API call per batch
         total_processed = 0
         total_errors = 0
-        
+
         for i in range(0, len(jobs), batch_size):
             batch = jobs[i:i + batch_size]
-            batch_num = i//batch_size + 1
-            total_batches = (len(jobs) + batch_size - 1)//batch_size
-            
+            batch_num = i // batch_size + 1
+            total_batches = (len(jobs) + batch_size - 1) // batch_size
+
             logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} jobs)")
-            
-            # Process jobs in parallel
-            tasks = [self.process_job_embedding(job) for job in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process results
-            for job, result in zip(batch, results):
-                if isinstance(result, Exception):
-                    logger.error(f"Error processing job ID {job.get('id')}: {result}")
+
+            texts = [self.create_embedding_text(job) for job in batch]
+            # Deduplicate identical texts to avoid recompute
+            unique_map = {}
+            order_keys = []
+            for idx, text in enumerate(texts):
+                key = hash(text)
+                order_keys.append(key)
+                if key not in unique_map:
+                    unique_map[key] = {'text': text, 'indices': [idx]}
+                else:
+                    unique_map[key]['indices'].append(idx)
+
+            unique_texts = [v['text'] for v in unique_map.values()]
+            embeddings = await self.generate_embeddings_batch(unique_texts)
+            if embeddings is None:
+                total_errors += len(batch)
+                continue
+
+            # Map embeddings back to jobs
+            # Maintain the order of unique_texts vs unique_map
+            unique_keys = list(unique_map.keys())
+            key_to_embedding = {unique_keys[i]: embeddings[i] for i in range(len(unique_keys))}
+
+            success_in_batch = 0
+            for idx, job in enumerate(batch):
+                emb = key_to_embedding.get(order_keys[idx])
+                if emb is None:
                     total_errors += 1
+                    logger.error(f"Missing embedding for job ID {job.get('id')}")
                     continue
-                
-                if result:
-                    total_processed += 1
+                if self.update_job_embedding(job['id'], emb):
+                    success_in_batch += 1
                 else:
                     total_errors += 1
-            
+
+            total_processed += success_in_batch
+
             # Progress update
             progress = (total_processed + total_errors) / len(jobs) * 100
             logger.info(f"Progress: {progress:.1f}% ({total_processed + total_errors}/{len(jobs)})")
-            
-            # Add delay between batches to respect API rate limits
+
             if i + batch_size < len(jobs):
                 await asyncio.sleep(delay)
         

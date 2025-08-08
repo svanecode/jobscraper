@@ -17,6 +17,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from supabase import create_client, Client
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -144,71 +145,41 @@ class SupabaseRLSClient:
             return False
         
         try:
-            # Get existing job IDs to check for duplicates
-            job_ids = [job['job_id'] for job in jobs]
-            
-            # Check which jobs already exist and their deletion status
-            existing_jobs_result = self.supabase.table(table_name).select('job_id, deleted_at').in_('job_id', job_ids).execute()
-            
-            existing_job_ids = set()
-            soft_deleted_job_ids = set()
-            
-            for job in existing_jobs_result.data:
-                job_id = job['job_id']
-                if job.get('deleted_at') is None:
-                    existing_job_ids.add(job_id)
-                else:
-                    soft_deleted_job_ids.add(job_id)
-            
-            # Separate new, existing, and soft-deleted jobs
-            new_jobs = []
-            existing_jobs = []
-            restored_jobs = []
-            
+            current_time = datetime.now(timezone.utc).isoformat()
+            # Prepare upsert payload: set last_seen always; clear deleted_at to restore
+            upsert_rows: List[Dict[str, Any]] = []
             for job in jobs:
-                job_id = job['job_id']
-                if job_id in soft_deleted_job_ids:
-                    restored_jobs.append(job)
-                elif job_id in existing_job_ids:
-                    existing_jobs.append(job)
-                else:
-                    new_jobs.append(job)
-            
-            # Log the breakdown
-            logger.info(f"📊 Job analysis: {len(new_jobs)} new jobs, {len(existing_jobs)} existing jobs, {len(restored_jobs)} restored jobs")
-            
-            # Insert only new jobs
-            if new_jobs:
-                jobs_data = []
-                current_time = datetime.now(timezone.utc).isoformat()
-                
-                for job in new_jobs:
-                    job_data = job.copy()
-                    job_data.pop('scraped_at', None)
-                    job_data['created_at'] = current_time
-                    job_data['last_seen'] = current_time
-                    jobs_data.append(job_data)
-                
-                result = self.supabase.table(table_name).insert(jobs_data).execute()
-                logger.info(f"✅ Successfully inserted {len(new_jobs)} new jobs")
-            else:
-                logger.info("ℹ️ No new jobs to insert")
-            
-            # Restore soft-deleted jobs
-            if restored_jobs:
-                restored_job_ids = [job['job_id'] for job in restored_jobs]
-                self.restore_deleted_jobs(restored_job_ids, table_name)
-                logger.info(f"🔄 Restored {len(restored_jobs)} previously deleted jobs")
-            
-            # Update last_seen for all jobs (new, existing, and restored)
-            all_job_ids = [job['job_id'] for job in jobs]
-            self.update_last_seen(all_job_ids)
-            
+                row = job.copy()
+                row.pop('scraped_at', None)
+                row['last_seen'] = current_time
+                # Hint to restore if previously soft-deleted
+                row['deleted_at'] = None
+                # Do not force created_at to avoid overwriting; rely on DB default
+                upsert_rows.append(row)
+
+            # Upsert by job_id in a single call
+            # Note: supabase-py v2 supports upsert with on_conflict
+            self.supabase.table(table_name).upsert(upsert_rows, on_conflict='job_id').execute()
+            logger.info(f"✅ Upserted {len(upsert_rows)} jobs (last_seen updated, restored if needed)")
             return True
-            
         except Exception as e:
-            logger.error(f"Error inserting jobs: {e}")
+            logger.error(f"Error inserting jobs via upsert: {e}")
             return False
+
+    def log_scrape_error(self, job_id: Optional[str], url: Optional[str], stage: str, message: str) -> None:
+        """Best-effort logging of scrape errors to database (if table exists)."""
+        try:
+            payload = {
+                'job_id': job_id,
+                'url': url,
+                'stage': stage,
+                'message': message,
+                'logged_at': datetime.now(timezone.utc).isoformat(),
+            }
+            self.supabase.table('scrape_errors').insert(payload).execute()
+        except Exception:
+            # Swallow errors to not impact scraper
+            pass
     
     def update_last_seen(self, job_ids: List[str], table_name: str = 'jobs') -> bool:
         """

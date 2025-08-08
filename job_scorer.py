@@ -43,7 +43,8 @@ import os
 import time
 from typing import List, Dict, Optional
 from supabase import create_client, Client
-from openai import OpenAI
+from openai import AsyncOpenAI
+from datetime import datetime, timezone
 
 # Load environment variables from .env file if it exists
 try:
@@ -77,7 +78,7 @@ class JobScorer:
         # Initialize OpenAI client
         self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         if self.openai_api_key:
-            self.openai_client = OpenAI(api_key=self.openai_api_key)
+            self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
             logger.info("OpenAI client initialized")
         else:
             self.openai_client = None
@@ -204,6 +205,30 @@ Beskrivelse: {job.get('description', 'N/A')}"""
             Score (0-3) or None if error
         """
         try:
+            # Heuristic short-circuit: skip OpenAI for obvious 0 or 2/3
+            title = (job.get('title') or '').lower()
+            company = (job.get('company') or '').lower()
+            description = (job.get('description') or '').lower()
+
+            # Blocklist: consultancies
+            consultancy_terms = [
+                'deloitte', 'ey', 'ernst & young', 'pwc', 'pricewaterhousecoopers',
+                'bdo', 'capgemini', 'kpmg', 'accenture', 'bain', 'mckinsey', 'bcg'
+            ]
+            if any(term in company for term in consultancy_terms) or any(term in title for term in consultancy_terms):
+                return 0
+
+            # Clear finance titles → at least 2
+            finance_terms = [
+                'cfo', 'økonomichef', 'regnskabschef', 'controller', 'bogholder',
+                'finance business partner', 'financial controller', 'regnskabsmedarbejder'
+            ]
+            temporal_terms = ['vikariat', 'barsel', 'midlertid', 'interim', 'hurtig tiltrædelse']
+            if any(term in title for term in finance_terms):
+                if any(t in title or t in description for t in temporal_terms):
+                    return 3
+                return 2
+
             # Create system message with rules and examples
             system_message = """Du er en dansk sprogmodel og ekspert i interim CFO-services. Din opgave er at gennemlæse danske jobopslag og vurdere sandsynligheden for, at virksomheden har brug for midlertidig CFO- eller økonomiassistance.
 
@@ -250,7 +275,7 @@ Firma: {job.get('company', 'N/A')}
 Lokation: {job.get('location', 'N/A')}
 Beskrivelse: {job.get('description', 'N/A')}"""
             
-            response = self.openai_client.chat.completions.create(
+            response = await self.openai_client.chat.completions.create(
                 model="gpt-4o",  # Using GPT-4o for better accuracy
                 messages=[
                     {"role": "system", "content": system_message},
@@ -293,7 +318,7 @@ Beskrivelse: {job.get('description', 'N/A')}"""
         try:
             response = self.supabase.table('jobs').update({
                 'cfo_score': score,
-                'scored_at': 'now()'
+                'scored_at': datetime.now(timezone.utc).isoformat()
             }).eq('job_id', job_id).execute()
             
             if response.data:

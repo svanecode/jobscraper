@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Dict, List, Optional
 from supabase import create_client, Client
+from difflib import SequenceMatcher
 
 # Load environment variables from .env file if it exists
 try:
@@ -84,10 +85,37 @@ class RegionMapper:
         if clean_location in self.city_to_region_cache:
             return self.city_to_region_cache[clean_location]
         
+        # Normalize common synonyms/abbreviations
+        synonyms = {
+            'kbh': 'københavn',
+            'kbhn': 'københavn',
+            'copenhagen': 'københavn',
+            'aarhus': 'århus',
+            'odense c': 'odense',
+            'odense m': 'odense',
+            'odense s': 'odense',
+            'aalborg': 'ålborg',
+        }
+        if clean_location in synonyms:
+            syn = synonyms[clean_location]
+            if syn in self.city_to_region_cache:
+                return self.city_to_region_cache[syn]
+
         # Try partial matches (in case location contains additional text)
         for city, region in self.city_to_region_cache.items():
             if city in clean_location or clean_location in city:
                 return region
+
+        # Fuzzy match last resort
+        best_match = None
+        best_ratio = 0.0
+        for city in self.city_to_region_cache.keys():
+            ratio = SequenceMatcher(None, clean_location, city).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = city
+        if best_match and best_ratio >= 0.8:
+            return self.city_to_region_cache[best_match]
         
         return None
     
