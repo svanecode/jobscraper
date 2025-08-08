@@ -40,6 +40,7 @@ Læs og vurder følgende jobopslag:
 import asyncio
 import logging
 import os
+import re
 from typing import List, Dict, Optional
 from supabase import create_client, Client
 from openai import AsyncOpenAI
@@ -296,20 +297,13 @@ Beskrivelse: {job.get('description', 'N/A')}"""
                     else:
                         raise
             
-            # Extract the score from the response
-            score_text = response.choices[0].message.content.strip()
-            
-            # Try to extract just the number
-            try:
-                score = int(score_text)
-                if 0 <= score <= 3:
-                    return score
-                else:
-                    logger.warning(f"Invalid score {score} for job {job.get('job_id')}, defaulting to 0")
-                    return 0
-            except ValueError:
-                logger.warning(f"Could not parse score '{score_text}' for job {job.get('job_id')}, defaulting to 0")
-                return 0
+            # Extract the score from the response robustly
+            score_text = (response.choices[0].message.content or '').strip()
+            match = re.search(r"\b([0-3])\b", score_text)
+            if match:
+                return int(match.group(1))
+            logger.warning(f"Could not parse score '{score_text}' for job {job.get('job_id')}, defaulting to 0")
+            return 0
                 
         except Exception as e:
             logger.error(f"Error scoring job {job.get('job_id')}: {e}")

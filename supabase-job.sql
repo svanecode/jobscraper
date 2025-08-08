@@ -12,7 +12,6 @@ create table public.jobs (
   deleted_at timestamp with time zone null,
   cfo_score integer null,
   scored_at timestamp with time zone null,
-  job_info timestamp with time zone null,
   last_seen timestamp with time zone null,
   region text[] null,
   embedding_created_at timestamp with time zone null,
@@ -54,10 +53,3 @@ where
   (deleted_at is null);
 
 create index IF not exists idx_jobs_rls_created_at on public.jobs using btree (created_at) TABLESPACE pg_default;
-
-create trigger job_audit_trigger
-after INSERT
-or DELETE
-or
-update on jobs for EACH row
-execute FUNCTION audit_job_changes ();

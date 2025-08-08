@@ -88,9 +88,11 @@ class JobInfoScraper:
     # ---------- Keyset pagination over all matching jobs ----------
     def iter_missing_info_jobs(self, batch_size: int = 1000):
         """
-        Yield all jobs with missing info (null/empty company, company_url, or description)
-        that haven't been processed yet (job_info is null), ordered by created_at DESC,
-        using keyset pagination to avoid OFFSET costs and the 1000-row cap.
+        Yield all active jobs with missing info (null/empty company, company_url, or description),
+        ordered by created_at DESC, using keyset pagination to avoid OFFSET costs and the 1000-row cap.
+        
+        Note: We intentionally do not require `job_info` to be NULL so that we can re-fill fields
+        that might have been cleared or were missing when first processed.
         """
         last_created_at = None
 
@@ -100,7 +102,6 @@ class JobInfoScraper:
                 .table('jobs')
                 .select('*')
                 .is_('deleted_at', 'null')
-                .is_('job_info', 'null')
                 .or_(EMPTY_STR_FILTER)
                 .order('created_at', desc=True)
                 .limit(batch_size)
@@ -363,27 +364,56 @@ class JobInfoScraper:
 
     def update_job_info(self, job_id: str, job_info: Dict) -> bool:
         """
-        Update job information in the database and set job_info timestamp
+        Update only fields that are missing (NULL/empty) in DB with scraped non-empty values.
+        Avoid overwriting existing non-empty values.
         """
         try:
-            update_data: Dict[str, str] = {}
+            # Sanitize scraped values
+            sanitized: Dict[str, str] = {}
             for key, value in job_info.items():
-                if value is not None and str(value).strip():
-                    value_str = str(value).strip()
-                    if key == 'description' and len(value_str) < 20:
+                if value is None:
+                    continue
+                if isinstance(value, str):
+                    v = value.strip()
+                    if not v:
                         continue
-                    if key == 'company' and len(value_str) < 2:
-                        continue
-                    if key == 'title' and len(value_str) < 5:
-                        continue
-                    update_data[key] = value_str
+                    sanitized[key] = v
+                else:
+                    sanitized[key] = value
 
-            from datetime import datetime, timezone
-            update_data['job_info'] = datetime.now(timezone.utc).isoformat()
+            if not sanitized:
+                logger.warning(f"No valid scraped data for job {job_id}")
+                return False
+
+            # Fetch current DB values to only fill missing fields
+            current_resp = (
+                self.supabase
+                .table('jobs')
+                .select('title,company,location,description,company_url')
+                .eq('job_id', job_id)
+                .limit(1)
+                .execute()
+            )
+            current = (current_resp.data or [{}])[0]
+
+            def is_empty(val) -> bool:
+                if val is None:
+                    return True
+                if isinstance(val, str) and val.strip() == '':
+                    return True
+                return False
+
+            update_data: Dict[str, str] = {}
+            for key in ['title', 'company', 'location', 'description', 'company_url']:
+                scraped_val = sanitized.get(key)
+                if scraped_val is None:
+                    continue
+                if is_empty(current.get(key)):
+                    update_data[key] = scraped_val
 
             if not update_data:
-                logger.warning(f"No valid data to update for job {job_id}")
-                return False
+                logger.info(f"No missing fields to update for job {job_id}")
+                return True
 
             response = (
                 self.supabase
@@ -424,10 +454,7 @@ class JobInfoScraper:
                 logger.warning("Job without job_id found, skipping")
                 return
 
-            if job.get('job_info'):
-                # Shouldn't happen due to filter, but be safe.
-                logger.info(f"Skipping job {job_id} - already processed (job_info present)")
-                return
+            # No longer using a job_info marker column to skip; always attempt to backfill missing fields
 
             async with semaphore:
                 logger.info(f"Processing #{job_idx}: {job_id}")
@@ -492,19 +519,16 @@ class JobInfoScraper:
             all_jobs_response = (
                 self.supabase
                 .table('jobs')
-                .select('company,company_url,description,job_info')
+                .select('company,company_url,description')
                 .is_('deleted_at', 'null')
                 .execute()
             )
             data = all_jobs_response.data or []
             total_jobs = len(data)
             missing_info_count = 0
-            processed_by_job_info_count = 0
             missing_fields = {'company': 0, 'company_url': 0, 'description': 0}
 
             for job in data:
-                if job.get('job_info'):
-                    processed_by_job_info_count += 1
                 has_missing = False
                 if not (job.get('company') or '').strip():
                     missing_fields['company'] += 1
@@ -522,9 +546,7 @@ class JobInfoScraper:
                 "total_jobs": total_jobs,
                 "missing_info": missing_info_count,
                 "missing_fields": missing_fields,
-                "missing_percentage": (missing_info_count / total_jobs * 100) if total_jobs > 0 else 0,
-                "processed_by_job_info": processed_by_job_info_count,
-                "processed_percentage": (processed_by_job_info_count / total_jobs * 100) if total_jobs > 0 else 0
+                "missing_percentage": (missing_info_count / total_jobs * 100) if total_jobs > 0 else 0
             }
         except Exception as e:
             logger.error(f"Error getting missing info stats: {e}")
@@ -547,7 +569,6 @@ async def main():
         logger.info("=== INITIAL STATISTICS ===")
         logger.info(f"Total active jobs: {stats['total_jobs']}")
         logger.info(f"Jobs with missing info: {stats['missing_info']} ({stats['missing_percentage']:.1f}%)")
-        logger.info(f"Jobs processed by job_info scraper: {stats['processed_by_job_info']} ({stats['processed_percentage']:.1f}%)")
         logger.info("Missing fields breakdown:")
         for field, count in stats['missing_fields'].items():
             pct = (count / stats['total_jobs'] * 100) if stats['total_jobs'] > 0 else 0
@@ -563,7 +584,6 @@ async def main():
         logger.info("=== FINAL STATISTICS ===")
         logger.info(f"Total active jobs: {final_stats['total_jobs']}")
         logger.info(f"Jobs with missing info: {final_stats['missing_info']} ({final_stats['missing_percentage']:.1f}%)")
-        logger.info(f"Jobs processed by job_info scraper: {final_stats['processed_by_job_info']} ({final_stats['processed_percentage']:.1f}%)")
         logger.info("Missing fields breakdown:")
         for field, count in final_stats['missing_fields'].items():
             pct = (count / final_stats['total_jobs'] * 100) if final_stats['total_jobs'] > 0 else 0

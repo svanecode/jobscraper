@@ -24,22 +24,17 @@ jobs:
       with:
         python-version: '3.11'
         cache: 'pip'
-        
-    - name: Install Playwright
+    
+    - name: Install dependencies and browsers
       run: |
         python -m pip install --upgrade pip
-        pip install playwright
-        playwright install --with-deps chromium
-        
-    - name: Install dependencies
-      run: |
         pip install -r requirements.txt
+        playwright install --with-deps chromium
         
     - name: Check environment setup
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         echo "Checking environment variables..."
@@ -52,11 +47,6 @@ jobs:
           echo "Warning: SUPABASE_SERVICE_ROLE_KEY is not set (required for RLS)"
         else
           echo "SUPABASE_SERVICE_ROLE_KEY is configured"
-        fi
-        if [ -z "$SUPABASE_ANON_KEY" ]; then
-          echo "Warning: SUPABASE_ANON_KEY is not set"
-        else
-          echo "SUPABASE_ANON_KEY is configured"
         fi
         if [ -z "$OPENAI_API_KEY" ]; then
           echo "Warning: OPENAI_API_KEY is not set (required for AI scoring)"
@@ -82,15 +72,6 @@ jobs:
         python job_info_scraper.py
         echo "Job info scraper completed successfully"
 
-    - name: Map regions from locations
-      env:
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      run: |
-        echo "Starting region mapping..."
-        python run_region_mapper.py --batch-size 500
-        echo "Region mapping completed successfully"
-        
     - name: Run AI job scorer
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -110,16 +91,6 @@ jobs:
         echo "Starting job embedding generation..."
         python job_embedding_generator.py
         echo "Job embedding generation completed successfully"
-        
-    - name: Upload artifacts (if any)
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: pipeline-results
-        path: |
-          *.json
-          *.csv
-        retention-days: 7
         
     - name: Send notification on success
       if: success()
