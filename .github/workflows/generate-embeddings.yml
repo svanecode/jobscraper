@@ -3,22 +3,27 @@ name: Generate Job Embeddings
 on:
   workflow_dispatch:  # Allow manual triggering
   schedule:
-    # Run daily at 6:00 AM Danish time (CET/CEST) - after the main pipeline
-    # This is 4:00 AM UTC in winter (CET) and 5:00 AM UTC in summer (CEST)
-    - cron: '0 6 * * *'
+    # GitHub cron uses UTC. Run daily at 04:30 UTC, after main pipeline
+    # ≈ 06:30 CEST (summer) / 05:30 CET (winter)
+    - cron: '30 4 * * *'
 
 jobs:
   generate-embeddings:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: generate-embeddings
+      cancel-in-progress: true
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.9'
+        python-version: '3.11'
+        cache: 'pip'
         
     - name: Install dependencies
       run: |

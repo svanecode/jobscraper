@@ -17,7 +17,6 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from supabase import create_client, Client
-import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +53,8 @@ class SupabaseRLSClient:
         """Test database connection and RLS setup"""
         try:
             # Test basic connection
-            result = self.supabase.table('jobs').select('count', count='exact').limit(1).execute()
+            # Request an exact count without selecting a non-existent 'count' column
+            result = self.supabase.table('jobs').select('*', count='exact').limit(1).execute()
             logger.info("✅ Database connection successful")
             
             # Test RLS policies by checking if we can access the table
@@ -146,24 +146,50 @@ class SupabaseRLSClient:
         
         try:
             current_time = datetime.now(timezone.utc).isoformat()
-            # Prepare upsert payload: set last_seen always; clear deleted_at to restore
-            upsert_rows: List[Dict[str, Any]] = []
+            
+            # Get all job IDs we're trying to insert
+            job_ids = [job['job_id'] for job in jobs]
+            
+            # Check which jobs already exist in a single query
+            existing_result = self.supabase.table(table_name).select('job_id').in_('job_id', job_ids).execute()
+            existing_job_ids = {row['job_id'] for row in (existing_result.data or [])}
+            
+            # Separate new jobs from existing jobs
+            new_jobs = []
+            existing_job_ids_list = []
+            
             for job in jobs:
                 row = job.copy()
                 row.pop('scraped_at', None)
-                row['last_seen'] = current_time
-                # Hint to restore if previously soft-deleted
-                row['deleted_at'] = None
-                # Do not force created_at to avoid overwriting; rely on DB default
-                upsert_rows.append(row)
-
-            # Upsert by job_id in a single call
-            # Note: supabase-py v2 supports upsert with on_conflict
-            self.supabase.table(table_name).upsert(upsert_rows, on_conflict='job_id').execute()
-            logger.info(f"✅ Upserted {len(upsert_rows)} jobs (last_seen updated, restored if needed)")
+                
+                if job['job_id'] in existing_job_ids:
+                    # Job exists - just update last_seen and restore if deleted
+                    existing_job_ids_list.append(job['job_id'])
+                else:
+                    # New job - include all fields
+                    row['last_seen'] = current_time
+                    row['deleted_at'] = None
+                    new_jobs.append(row)
+            
+            # Insert new jobs
+            if new_jobs:
+                self.supabase.table(table_name).insert(new_jobs).execute()
+                logger.info(f"✅ Inserted {len(new_jobs)} new jobs")
+            
+            # Update last_seen for existing jobs and restore if deleted
+            if existing_job_ids_list:
+                self.supabase.table(table_name).update({
+                    'last_seen': current_time,
+                    'deleted_at': None
+                }).in_('job_id', existing_job_ids_list).execute()
+                logger.info(f"🔄 Updated last_seen for {len(existing_job_ids_list)} existing jobs")
+            
+            total_processed = len(new_jobs) + len(existing_job_ids_list)
+            logger.info(f"✅ Processed {total_processed} jobs total (new: {len(new_jobs)}, existing: {len(existing_job_ids_list)})")
             return True
+            
         except Exception as e:
-            logger.error(f"Error inserting jobs via upsert: {e}")
+            logger.error(f"Error inserting jobs: {e}")
             return False
 
     def log_scrape_error(self, job_id: Optional[str], url: Optional[str], stage: str, message: str) -> None:

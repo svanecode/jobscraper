@@ -10,7 +10,6 @@ job titles, descriptions, and company information.
 import asyncio
 import logging
 import os
-import time
 from typing import List, Dict, Optional
 from supabase import create_client, Client
 from openai import AsyncOpenAI
@@ -53,6 +52,10 @@ class JobEmbeddingGenerator:
             self.openai_client = None
             logger.error("OpenAI API key not provided. Cannot proceed.")
             raise ValueError("OpenAI API key required")
+        
+        # Configure embedding model (best-quality by default)
+        self.embedding_model = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-large')
+        logger.info(f"Using embedding model: {self.embedding_model}")
     
     def get_jobs_without_embeddings(self, max_jobs=None) -> List[Dict]:
         """
@@ -166,35 +169,44 @@ Description: {company} - {title}. """
         Returns:
             List of floats representing the embedding vector
         """
-        try:
-            response = await self.openai_client.embeddings.create(
-                model="text-embedding-3-large",
-                input=text
-            )
-            
-            # Extract the embedding vector
-            embedding = response.data[0].embedding
-            
-            logger.debug(f"Generated embedding with {len(embedding)} dimensions")
-            return embedding
-                
-        except Exception as e:
-            logger.error(f"Error generating embedding: {e}")
-            return None
+        for attempt in range(3):
+            try:
+                response = await self.openai_client.embeddings.create(
+                    model=self.embedding_model,
+                    input=text
+                )
+                embedding = response.data[0].embedding
+                logger.debug(f"Generated embedding with {len(embedding)} dimensions")
+                return embedding
+            except Exception as e:
+                if attempt < 2:
+                    backoff_seconds = 2 ** attempt
+                    logger.warning(f"Embedding request failed (attempt {attempt + 1}/3). Retrying in {backoff_seconds}s: {e}")
+                    await asyncio.sleep(backoff_seconds)
+                else:
+                    logger.error(f"Error generating embedding after retries: {e}")
+                    return None
 
-    async def generate_embeddings_batch(self, texts: List[str], model: str = "text-embedding-3-large") -> Optional[List[List[float]]]:
+    async def generate_embeddings_batch(self, texts: List[str], model: Optional[str] = None) -> Optional[List[List[float]]]:
         """
         Generate embeddings for a batch of texts in one API call.
         """
-        try:
-            response = await self.openai_client.embeddings.create(
-                model=model,
-                input=texts
-            )
-            return [item.embedding for item in response.data]
-        except Exception as e:
-            logger.error(f"Batch embedding error: {e}")
-            return None
+        use_model = model or self.embedding_model
+        for attempt in range(3):
+            try:
+                response = await self.openai_client.embeddings.create(
+                    model=use_model,
+                    input=texts
+                )
+                return [item.embedding for item in response.data]
+            except Exception as e:
+                if attempt < 2:
+                    backoff_seconds = 2 ** attempt
+                    logger.warning(f"Batch embedding request failed (attempt {attempt + 1}/3). Retrying in {backoff_seconds}s: {e}")
+                    await asyncio.sleep(backoff_seconds)
+                else:
+                    logger.error(f"Batch embedding error after retries: {e}")
+                    return None
     
     def update_job_embedding(self, job_id: int, embedding: List[float]) -> bool:
         """
@@ -295,31 +307,26 @@ Description: {company} - {title}. """
             logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} jobs)")
 
             texts = [self.create_embedding_text(job) for job in batch]
-            # Deduplicate identical texts to avoid recompute
-            unique_map = {}
-            order_keys = []
+            # Deduplicate identical texts to avoid recompute (use text itself as key to avoid hash collisions)
+            text_to_indices_map: Dict[str, List[int]] = {}
             for idx, text in enumerate(texts):
-                key = hash(text)
-                order_keys.append(key)
-                if key not in unique_map:
-                    unique_map[key] = {'text': text, 'indices': [idx]}
+                if text not in text_to_indices_map:
+                    text_to_indices_map[text] = [idx]
                 else:
-                    unique_map[key]['indices'].append(idx)
+                    text_to_indices_map[text].append(idx)
 
-            unique_texts = [v['text'] for v in unique_map.values()]
+            unique_texts = list(text_to_indices_map.keys())
             embeddings = await self.generate_embeddings_batch(unique_texts)
             if embeddings is None:
                 total_errors += len(batch)
                 continue
 
             # Map embeddings back to jobs
-            # Maintain the order of unique_texts vs unique_map
-            unique_keys = list(unique_map.keys())
-            key_to_embedding = {unique_keys[i]: embeddings[i] for i in range(len(unique_keys))}
+            text_to_embedding = {unique_texts[i]: embeddings[i] for i in range(len(unique_texts))}
 
             success_in_batch = 0
             for idx, job in enumerate(batch):
-                emb = key_to_embedding.get(order_keys[idx])
+                emb = text_to_embedding.get(texts[idx])
                 if emb is None:
                     total_errors += 1
                     logger.error(f"Missing embedding for job ID {job.get('id')}")

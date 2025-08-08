@@ -14,9 +14,8 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from playwright.async_api import async_playwright
-from supabase import create_client, Client
 from supabase_rls_config import SupabaseRLSClient
 
 # Load environment variables from .env file if it exists

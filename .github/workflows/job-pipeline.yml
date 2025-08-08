@@ -3,20 +3,21 @@ name: Job Pipeline (Scrape, Cleanup, Info, Score & Embeddings)
 on:
   workflow_dispatch:  # Allow manual triggering
   schedule:
-    # Run daily at 5:00 AM Danish time (CET/CEST)
-    # This is 3:00 AM UTC in winter (CET) and 4:00 AM UTC in summer (CEST)
-    - cron: '0 5 * * *'
+    # GitHub cron uses UTC. This runs daily at 03:00 UTC
+    # ≈ 05:00 CEST (summer) and 04:00 CET (winter) in Denmark
+    - cron: '0 3 * * *'
 
 jobs:
   scrape-cleanup-and-score:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     concurrency:
       group: job-pipeline
       cancel-in-progress: true
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -80,6 +81,15 @@ jobs:
         echo "Starting job info scraper to fill missing company information..."
         python job_info_scraper.py
         echo "Job info scraper completed successfully"
+
+    - name: Map regions from locations
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      run: |
+        echo "Starting region mapping..."
+        python run_region_mapper.py --batch-size 500
+        echo "Region mapping completed successfully"
         
     - name: Run AI job scorer
       env:
