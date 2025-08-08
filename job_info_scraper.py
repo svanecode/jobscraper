@@ -164,21 +164,22 @@ class JobInfoScraper:
         """
         job_url = f"https://www.jobindex.dk/vis-job/{job_id}"
         
-        # Support reusing a shared page if provided/initialized
-        external_page = page is not None
+        # Ensure we have a page to work with
+        created_temp_page = False
         if page is None:
             await self.setup_browser()
-            page = self._page
+            page = await self._context.new_page()
+            created_temp_page = True
+
+        try:
+            logger.info(f"Scraping job info from: {job_url}")
             
-            try:
-                logger.info(f"Scraping job info from: {job_url}")
-                
-                # Navigate to the job page
-                await page.goto(job_url, wait_until='domcontentloaded', timeout=15000)
-                await page.wait_for_load_state('domcontentloaded', timeout=5000)
-                
-                # Extract job information
-                job_info = {}
+            # Navigate to the job page
+            await page.goto(job_url, wait_until='domcontentloaded', timeout=15000)
+            await page.wait_for_load_state('domcontentloaded', timeout=5000)
+            
+            # Extract job information
+            job_info = {}
                 
                 # Extract job title - use proper selectors and clean up
                 title = None
@@ -445,15 +446,18 @@ class JobInfoScraper:
                     logger.info(f"Description: '{description}'")
                 logger.info(f"Location: '{job_info.get('location')}'")
                 
-                return job_info
-                
-            except Exception as e:
-                logger.error(f"Error scraping job {job_id}: {e}")
-                return None
-            finally:
-                # Only close if we created a temporary browser for this call
-                if not external_page:
-                    await self.teardown_browser()
+            return job_info
+            
+        except Exception as e:
+            logger.error(f"Error scraping job {job_id}: {e}")
+            return None
+        finally:
+            # Close only the temporary page if we created one
+            if created_temp_page and page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
     
     def update_job_info(self, job_id: str, job_info: Dict) -> bool:
         """
@@ -580,7 +584,16 @@ class JobInfoScraper:
                     await page.close()
 
         tasks = [process_single(i, job) for i, job in enumerate(jobs, 1)]
-        await asyncio.gather(*tasks)
+        # Guard: if interrupted, close outstanding pages gracefully
+        try:
+            await asyncio.gather(*tasks)
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user. Closing pages...")
+        finally:
+            try:
+                await self._context.close()
+            except Exception:
+                pass
 
         logger.info("=== PROCESSING COMPLETE ===")
         logger.info(f"Total jobs processed: {total_processed}")
