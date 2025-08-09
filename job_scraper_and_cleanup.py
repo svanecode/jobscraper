@@ -186,6 +186,7 @@ class JobScraperAndCleanup:
                 # Scrape jobs from all available pages
                 total_jobs = 0
                 page_num = 1
+                consecutive_nav_failures = 0
                 has_more_pages = True
                 max_pages = None  # No limit - scrape all available pages
 
@@ -250,44 +251,74 @@ class JobScraperAndCleanup:
                         logger.warning(f"No jobs found on page {page_num}")
                         break  # No jobs on current page, stop
                     
-                    # Try to go to next page using URL parameter
-                    try:
-                        next_url = f"{self.search_url}?page={page_num + 1}"
-                        logger.info(f"Attempting to navigate to: {next_url}")
-                        
-                        # Navigate to next page with robust timeout
-                        await page.goto(next_url, wait_until='domcontentloaded', timeout=30000)
-                        await page.wait_for_load_state('domcontentloaded', timeout=10000)
+                    # Try to go to next page using multiple strategies and retries
+                    next_url = f"{self.search_url}?page={page_num + 1}"
+                    logger.info(f"Attempting to navigate to: {next_url}")
 
-                        await try_dismiss_cookies()
-                        
-                        # Small delay between pages to be respectful
-                        await asyncio.sleep(0.5)
-                        
+                    navigated = False
+                    for attempt in range(3):
+                        # Strategy A: normal domcontentloaded
+                        try:
+                            await page.goto(next_url, wait_until='domcontentloaded', timeout=30000)
+                            await try_dismiss_cookies()
+                            navigated = True
+                            break
+                        except Exception as e_a:
+                            logger.warning(f"Attempt {attempt + 1}/3: domcontentloaded navigation failed: {e_a}")
+
+                        # Strategy B: no wait_until + manual settle
+                        try:
+                            await page.goto(next_url, timeout=60000)
+                            await asyncio.sleep(3)
+                            await try_dismiss_cookies()
+                            navigated = True
+                            break
+                        except Exception as e_b:
+                            logger.warning(f"Attempt {attempt + 1}/3: basic navigation failed: {e_b}")
+
+                        # Strategy C: networkidle + short settle
+                        try:
+                            await page.goto(next_url, wait_until='networkidle', timeout=90000)
+                            await asyncio.sleep(2)
+                            await try_dismiss_cookies()
+                            navigated = True
+                            break
+                        except Exception as e_c:
+                            logger.warning(f"Attempt {attempt + 1}/3: networkidle navigation failed: {e_c}")
+
+                        # Strategy D (last attempt only): try clicking a Next button
+                        if attempt == 2:
+                            try:
+                                next_loc = page.get_by_text("Næste", exact=False)
+                                if await next_loc.count() > 0:
+                                    await next_loc.first.click()
+                                    await page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                    await try_dismiss_cookies()
+                                    navigated = True
+                                    break
+                            except Exception as e_d:
+                                logger.warning(f"Attempt {attempt + 1}/3: next-button navigation failed: {e_d}")
+
+                        await asyncio.sleep(1)
+
+                    if navigated:
                         page_num += 1
                         logger.info(f"Successfully navigated to page {page_num}")
-                        
-                        # Check if we've reached the maximum pages
+                        consecutive_nav_failures = 0
+
                         if max_pages is not None and page_num > max_pages:
                             logger.info(f"Reached maximum page limit ({max_pages}), stopping pagination")
                             has_more_pages = False
-                            
-                    except Exception as e:
-                        logger.warning(f"Failed to navigate to page {page_num + 1} via URL: {e}")
-                        # Fallback: try clicking a "next" link/button
-                        try:
-                            next_loc = page.get_by_text("Næste", exact=False)
-                            if await next_loc.count() > 0:
-                                await next_loc.first.click()
-                                await page.wait_for_load_state('domcontentloaded', timeout=15000)
-                                await try_dismiss_cookies()
-                                page_num += 1
-                                logger.info(f"Navigated to page {page_num} via next button")
-                            else:
-                                has_more_pages = False
-                        except Exception as e2:
-                            logger.warning(f"Fallback next click failed: {e2}")
+                    else:
+                        consecutive_nav_failures += 1
+                        logger.warning(f"Could not navigate to next page after multiple retries (consecutive failures: {consecutive_nav_failures})")
+                        if consecutive_nav_failures >= 3:
+                            logger.warning("Max consecutive navigation failures reached; assuming end of pagination")
                             has_more_pages = False
+                        else:
+                            # Try skipping this page index and attempt the next one
+                            page_num += 1
+                            logger.info(f"Skipping to page {page_num} and continuing")
                 
                 logger.info(f"🎉 Scraping completed! Total jobs found: {total_jobs} across {page_num - 1} pages")
                 logger.info("⏳ Now proceeding to save jobs and update last_seen...")
