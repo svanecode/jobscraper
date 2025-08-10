@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
 """
-Combined Job Scraper and Cleanup (Jobindex → Supabase)
+Jobindex → Supabase: Fast Scraper + Cleanup (Turbo)
 
-What it does
-------------
-1) Scrapes Jobindex search results (category: "kontor") across all pages.
-2) Saves new jobs and updates last_seen for existing jobs (via RLS client).
-3) Cleans up old jobs not seen recently.
-4) Prints end-of-run stats.
-
-Key features
-------------
-- Bullet-proof pagination: only uses search pagination (scoped to container) and
-  safe fallback by incrementing ?page=, plus post-nav validation that we stayed
-  on /jobsoegning/... and there are job cards.
-- Blocks heavy assets (images/fonts/media) but keeps CSS for layout.
-- Dedup by job_id (Jobindex sometimes repeats “fremhævet” ads).
-- Idle & page count guards to avoid infinite loops.
-- Danish date parsing (i dag, i går, “for X dage siden”, “10. aug”, etc.).
-- Per-page batch Saves to Supabase via your SupabaseRLSClient (RLS aware).
+Key speed tricks
+- No DOM "next" clicks: deterministic pagination (?page=N)
+- No networkidle waits, only domcontentloaded + short bounded waits
+- Aggressive request blocking (images/media/analytics/ads)
+- Short timeouts, small backoffs
 """
 
 import asyncio
@@ -28,7 +16,7 @@ import random
 import re
 import sys
 from datetime import datetime, timedelta
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from playwright.async_api import async_playwright
 from supabase_rls_config import SupabaseRLSClient
@@ -50,13 +38,19 @@ logger = logging.getLogger(__name__)
 
 SEARCH_PATH_PREFIX = "/jobsoegning/"
 
+# Hosts to hard-block (analytics/ads/heatmaps/etc.)
+BLOCK_HOST_SUBSTR = (
+    "googletagmanager.com", "google-analytics.com", "doubleclick.net",
+    "facebook.net", "facebook.com", "hotjar.com", "optimizely.com",
+    "optanon.blob.core.windows.net", "cdn.cookiebot.com", "consent.",
+    "cloudflareinsights.com", "segment.com", "intercom.io",
+)
+
 class JobScraperAndCleanup:
     def __init__(self, supabase_url=None, supabase_key=None, cleanup_hours=24):
         self.base_url = "https://www.jobindex.dk"
         self.search_url = "https://www.jobindex.dk/jobsoegning/kontor"
         self.cleanup_hours = cleanup_hours
-
-        # Stats counters
         self.scraped_this_run = 0
 
         # Supabase RLS client
@@ -109,49 +103,35 @@ class JobScraperAndCleanup:
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/120.0.0.0 Safari/537.36"
                 ),
-                viewport={"width": 1920, "height": 1080},
+                viewport={"width": 1366, "height": 768},  # smaller viewport = fewer pixels to paint
                 extra_http_headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                     "Accept-Language": "da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "Accept-Encoding": "gzip, deflate",
                     "Upgrade-Insecure-Requests": "1",
                 },
                 bypass_csp=True,
             )
 
-            # Block heavy assets (keep CSS)
+            # Aggressive network blocking (keep CSS/js/html only)
             async def route_interceptor(route):
                 req = route.request
+                url = req.url.lower()
                 if req.resource_type in {"image", "font", "media"}:
+                    return await route.abort()
+                if any(host in url for host in BLOCK_HOST_SUBSTR):
                     return await route.abort()
                 return await route.continue_()
             await context.route("**/*", route_interceptor)
 
             page = await context.new_page()
-            page.set_default_timeout(45000)
-            page.set_default_navigation_timeout(45000)
+            page.set_default_timeout(15000)
+            page.set_default_navigation_timeout(20000)
 
             try:
-                logger.info(f"🔍 Starting job scraping from: {self.search_url}")
+                logger.info(f"🔍 Start: {self.search_url}")
 
-                # Robust initial nav
-                nav_ok = False
-                for attempt in range(4):
-                    try:
-                        wait_until = ["domcontentloaded", "load", None, "networkidle"][attempt]
-                        if wait_until:
-                            await page.goto(self.search_url, wait_until=wait_until, timeout=60000)
-                        else:
-                            await page.goto(self.search_url, timeout=60000)
-                            await asyncio.sleep(5)
-                        nav_ok = True
-                        logger.info("Navigation successful (%s)", wait_until or "basic")
-                        break
-                    except Exception as e:
-                        logger.warning("Initial nav attempt %d failed: %s", attempt + 1, e)
-                if not nav_ok:
-                    logger.error("All initial navigation strategies failed")
-                    return False
+                # Fast initial nav
+                await page.goto(self.search_url, wait_until="domcontentloaded", timeout=30000)
 
                 # Guard: ensure it's a search URL
                 if not urlparse(page.url).path.startswith(SEARCH_PATH_PREFIX):
@@ -160,39 +140,13 @@ class JobScraperAndCleanup:
 
                 total_jobs = 0
                 page_num = 1
-                seen_urls = {page.url}
                 seen_job_ids = set()
                 empty_pages_in_a_row = 0
                 idle_pages = 0   # pages with < 3 unique jobs
                 MAX_PAGES = 1000
-
-                async def wait_for_any_selector(selectors, timeout_ms=10000):
-                    for selector in selectors:
-                        try:
-                            await page.wait_for_selector(selector, timeout=timeout_ms, state="attached")
-                            return True
-                        except Exception:
-                            continue
-                    return False
-
-                async def try_dismiss_cookies():
-                    try:
-                        for sel in [
-                            'button:has-text("Accepter")',
-                            'button:has-text("Acceptér")',
-                            'button:has-text("OK")',
-                            'text="Accepter alle"',
-                        ]:
-                            el = await page.query_selector(sel)
-                            if el:
-                                await el.click()
-                                await asyncio.sleep(0.3 + random.random() * 0.4)
-                                break
-                    except Exception:
-                        pass
+                MAX_EMPTY_STREAK = 2  # stop after two empty pages (usually end)
 
                 def _next_search_url(current_url: str) -> str:
-                    """Increment ?page= for the current search URL. Defaults to page=2 if missing."""
                     parsed = urlparse(current_url)
                     qs = parse_qs(parsed.query)
                     current_page = int(qs.get("page", ["1"])[0] or "1")
@@ -200,102 +154,47 @@ class JobScraperAndCleanup:
                     new_query = urlencode({k: v[0] for k, v in qs.items()})
                     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", new_query, ""))
 
-                async def goto_next_page():
-                    """
-                    Navigate to the next **search** page only:
-                      1) Click next inside search pagination containers.
-                      2) Fallback: increment ?page=.
-                      3) Validate path and presence of job cards.
-                    """
-                    prev_url = page.url
-
-                    # 1) Scoped containers only
-                    pagination_containers = [
-                        ".jix_pagination",                 # Jobindex classic
-                        'nav[aria-label="Pagination"]',
-                        ".pagination",                      # generic
-                    ]
-                    next_clicked = False
-                    for cont_sel in pagination_containers:
-                        cont = page.locator(cont_sel).first
-                        if await cont.count() == 0:
-                            continue
-                        next_link = cont.locator('a[rel="next"], a:has-text("Næste")').first
-                        if await next_link.count() > 0:
-                            try:
-                                await next_link.scroll_into_view_if_needed()
-                                with page.expect_navigation(wait_until="domcontentloaded", timeout=45000):
-                                    await next_link.click()
-                                next_clicked = True
-                                break
-                            except Exception:
-                                # fall through to URL fallback
-                                pass
-
-                    # 2) Fallback: increment ?page= deterministically
-                    if not next_clicked:
-                        parsed = urlparse(page.url)
-                        if not parsed.path.startswith(SEARCH_PATH_PREFIX):
-                            return False
-                        target = _next_search_url(page.url)
+                async def quick_ready():
+                    """Short, bounded readiness check; no networkidle."""
+                    try:
+                        await page.wait_for_selector(
+                            '[id^="jobad-wrapper-"], .job-listing, .job-item, [data-testid="job-listing"], .job-card, .job-ad',
+                            timeout=5000,
+                            state="attached",
+                        )
+                        return True
+                    except Exception:
+                        # one slow pass: small scroll + short wait
                         try:
-                            await page.goto(target, wait_until="domcontentloaded", timeout=60000)
+                            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            await asyncio.sleep(0.5 + random.random() * 0.3)
+                            await page.wait_for_selector(
+                                '[id^="jobad-wrapper-"], .job-listing, .job-item, [data-testid="job-listing"], .job-card, .job-ad',
+                                timeout=2000,
+                                state="attached",
+                            )
+                            return True
                         except Exception:
                             return False
 
-                    await try_dismiss_cookies()
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=15000)
-                    except Exception:
-                        pass
-
-                    # 3) Validate: path + job cards + not same URL
+                async def goto_next_page():
+                    """Deterministic pagination only: bump ?page= and validate."""
+                    target = _next_search_url(page.url)
+                    await page.goto(target, wait_until="domcontentloaded", timeout=25000)
                     if not urlparse(page.url).path.startswith(SEARCH_PATH_PREFIX):
-                        logger.info(f"Navigation veered off search: {page.url} (stopping)")
                         return False
-
-                    job_selector = (
-                        '[id^="jobad-wrapper-"], .job-listing, .job-item, '
-                        '[data-testid="job-listing"], .job-card, .job-ad'
-                    )
-                    if await page.locator(job_selector).first.count() == 0:
-                        logger.info(f"Next page has no job listings visible: {page.url} (stopping)")
-                        return False
-
-                    if page.url == prev_url or page.url in seen_urls:
-                        return False
-
-                    seen_urls.add(page.url)
+                    # don’t over-wait; just do a quick readiness check
+                    _ = await quick_ready()
                     return True
 
                 while True:
-                    logger.info(f"📄 Scraping page {page_num}: {page.url}")
+                    logger.info(f"📄 Page {page_num}: {page.url}")
 
-                    ready = await wait_for_any_selector(
-                        [
-                            '[id^="jobad-wrapper-"]', '.job-listing', '.job-item',
-                            '[data-testid="job-listing"]', '.job-card', '.job-ad',
-                        ],
-                        timeout_ms=15000,
-                    )
-                    if not ready:
-                        logger.warning("No job container found (timeout). Trying one slow pass…")
-                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        await asyncio.sleep(1.0 + random.random() * 0.5)
-                        ready = await wait_for_any_selector(
-                            [
-                                '[id^="jobad-wrapper-"]', '.job-listing', '.job-item',
-                                '[data-testid="job-listing"]', '.job-card', '.job-ad',
-                            ],
-                            timeout_ms=8000,
-                        )
-
-                    await try_dismiss_cookies()
-
-                    page_jobs = await self.extract_jobs_from_page(page)
+                    ready = await quick_ready()
+                    page_jobs = await self.extract_jobs_from_page(page) if ready else []
                     orig_count = len(page_jobs)
 
-                    # Dedup within this run by job_id
+                    # Dedup this run by job_id
                     if page_jobs:
                         unique_jobs = []
                         for j in page_jobs:
@@ -304,61 +203,47 @@ class JobScraperAndCleanup:
                                 unique_jobs.append(j)
                         page_jobs = unique_jobs
 
-                        if len(page_jobs) < orig_count:
-                            logger.info(f"Deduplicated: {orig_count} → {len(page_jobs)} unique jobs on page {page_num}")
-
-                    dedup_only = (orig_count > 0 and len(page_jobs) == 0)
-
                     if page_jobs:
                         empty_pages_in_a_row = 0
-                        total_jobs += len(page_jobs)
+                        found = len(page_jobs)
+                        total_jobs += found
                         self.scraped_this_run = total_jobs
-                        logger.info(f"Found {len(page_jobs)} jobs on page {page_num}")
+                        logger.info(f"Found {found} jobs on page {page_num}")
 
-                        # Idle page tracking
-                        if len(page_jobs) < 3:
-                            idle_pages += 1
-                        else:
-                            idle_pages = 0
+                        idle_pages = (idle_pages + 1) if found < 3 else 0
 
                         # Save immediately per page
                         try:
                             if self.supabase.insert_jobs(page_jobs):
-                                logger.info(f"✅ Saved {len(page_jobs)} jobs from page {page_num}")
+                                logger.info(f"✅ Saved {found} jobs from page {page_num}")
                             else:
                                 logger.warning(f"⚠️ Supabase insert returned False on page {page_num}")
                         except Exception as e:
                             logger.error(f"❌ Supabase insert failed on page {page_num}: {e}")
                     else:
                         empty_pages_in_a_row += 1
-                        if not dedup_only:
-                            idle_pages += 1
-                        else:
-                            idle_pages = max(0, idle_pages - 1)
-                        logger.warning(f"No jobs parsed on page {page_num} (empty streak: {empty_pages_in_a_row})")
+                        idle_pages += 1
+                        logger.info(f"Empty page {page_num} (streak={empty_pages_in_a_row})")
 
                     # Guards
-                    if page_num >= MAX_PAGES or idle_pages >= 10:
-                        logger.info(f"Guard stop at page {page_num}, url={page.url}, last_jobs={len(page_jobs)}")
+                    if page_num >= MAX_PAGES:
+                        logger.info(f"Guard stop at MAX_PAGES ({page_num})")
+                        break
+                    if idle_pages >= 8:
+                        logger.info(f"Guard stop due to repeated low-yield pages (idle_pages={idle_pages})")
+                        break
+                    if empty_pages_in_a_row >= MAX_EMPTY_STREAK:
+                        logger.info(f"No more results after {MAX_EMPTY_STREAK} empty pages. Stopping.")
                         break
 
-                    if empty_pages_in_a_row >= 2:
-                        await asyncio.sleep(2 + random.random())
-
-                    navigated = await goto_next_page()
-                    if not navigated:
-                        if empty_pages_in_a_row == 0:
-                            logger.info(f"No next page detected. Finishing at page {page_num}, url={page.url}")
-                            break
-                        else:
-                            logger.info(f"No next page or navigation blocked. Finishing after empty pages at page {page_num}, url={page.url}")
-                            break
-
+                    # Next page (fast)
+                    if not await goto_next_page():
+                        logger.info("No next page or left search path. Stopping.")
+                        break
                     page_num += 1
-                    logger.info(f"➡️  Navigated to page {page_num}: {page.url}")
+                    logger.info(f"➡️  Page {page_num}: {page.url}")
 
-                logger.info(f"🎉 Scraping completed! Total jobs found: {total_jobs} across {page_num} pages")
-                logger.info(f"📊 Final stats: seen_urls={len(seen_urls)}")
+                logger.info(f"🎉 Done! Total jobs found: {total_jobs} across {page_num} pages")
                 return True
 
             except Exception as e:
@@ -372,7 +257,6 @@ class JobScraperAndCleanup:
     async def extract_jobs_from_page(self, page):
         jobs = []
         try:
-            # Candidate containers
             job_selectors = [
                 '[id^="jobad-wrapper-"]',
                 '.job-listing',
@@ -405,19 +289,17 @@ class JobScraperAndCleanup:
 
     async def parse_job_listing(self, job_wrapper):
         try:
-            # job_id (wrapper id, data-*, or from href)
+            # job_id
             job_id = None
             try:
                 wrapper_id = await job_wrapper.get_attribute("id")
                 if wrapper_id and "jobad-wrapper-" in wrapper_id:
                     job_id = wrapper_id.replace("jobad-wrapper-", "")
-
                 if not job_id:
                     for attr in ("data-jobid", "data-id"):
                         job_id = await job_wrapper.get_attribute(attr)
                         if job_id:
                             break
-
                 if not job_id:
                     link_element = await job_wrapper.query_selector(
                         'a[href*="/vis-job/"], a[href*="/job/"], a[href*="/jobannonce/"]'
@@ -430,7 +312,6 @@ class JobScraperAndCleanup:
                                 job_id = toks[-1].split("?")[0]
             except Exception:
                 pass
-
             if not job_id:
                 return None
 
@@ -439,7 +320,7 @@ class JobScraperAndCleanup:
             try:
                 el = await job_wrapper.query_selector("h4 a, .job-title a, .title a")
                 if el:
-                    title = self._normalize_whitespace(await el.inner_text() or "")
+                    title = self._normalize(await el.inner_text() or "")
             except Exception:
                 pass
 
@@ -448,7 +329,7 @@ class JobScraperAndCleanup:
             try:
                 el = await job_wrapper.query_selector(".jix-toolbar-top__company, .company, .employer, .job-company")
                 if el:
-                    company = self._normalize_whitespace(await el.inner_text() or "")
+                    company = self._normalize(await el.inner_text() or "")
             except Exception:
                 pass
 
@@ -457,7 +338,7 @@ class JobScraperAndCleanup:
             try:
                 el = await job_wrapper.query_selector(".jix_robotjob--area, .location, .job-location, .place")
                 if el:
-                    location = self._normalize_whitespace(await el.inner_text() or "")
+                    location = self._normalize(await el.inner_text() or "")
             except Exception:
                 pass
 
@@ -466,7 +347,7 @@ class JobScraperAndCleanup:
             try:
                 el = await job_wrapper.query_selector(".date, .job-date, .published")
                 if el:
-                    date_text = self._normalize_whitespace(await el.inner_text() or "")
+                    date_text = self._normalize(await el.inner_text() or "")
                     if date_text:
                         publication_date = self._parse_danish_date(date_text)
             except Exception:
@@ -479,7 +360,7 @@ class JobScraperAndCleanup:
                     ".jix_robotjob--description, .description, .job-description, .summary, .job-summary"
                 )
                 if el:
-                    description = self._normalize_whitespace(await el.inner_text() or "")
+                    description = self._normalize(await el.inner_text() or "")
             except Exception:
                 pass
 
@@ -499,7 +380,7 @@ class JobScraperAndCleanup:
 
     # ----------------- HELPERS -----------------
     @staticmethod
-    def _normalize_whitespace(text):
+    def _normalize(text):
         if not text:
             return text
         return re.sub(r"\s+", " ", text.strip())
@@ -509,7 +390,6 @@ class JobScraperAndCleanup:
         """Parse 'i dag', 'i går', 'for 3 dage siden', '10. aug', '15. september' → YYYY-MM-DD."""
         if not date_text:
             return datetime.now().strftime("%Y-%m-%d")
-
         t = date_text.lower().strip()
         today = datetime.now()
 
@@ -517,7 +397,6 @@ class JobScraperAndCleanup:
             return today.strftime("%Y-%m-%d")
         if t in {"i går", "i gaar", "yesterday"}:
             return (today - timedelta(days=1)).strftime("%Y-%m-%d")
-
         if "dage siden" in t or "days ago" in t:
             m = re.search(r"(\d+)", t)
             if m:
@@ -543,7 +422,6 @@ class JobScraperAndCleanup:
                     return f"{year:04d}-{month:02d}-{day:02d}"
                 except Exception:
                     pass
-
         return today.strftime("%Y-%m-%d")
 
     # ----------------- CLEANUP & STATS -----------------
@@ -596,9 +474,9 @@ async def main():
             logger.info(f"  Jobs scraped today: {stats.get('jobs_scraped_today')}")
             logger.info(f"  Cleanup threshold: {stats.get('cleanup_hours')} hours")
             logger.info(f"  Jobs deleted this run: {cleanup_stats.get('total_deleted')}")
-            logger.info("\n🎉 Combined scraper and cleanup completed successfully!")
+            logger.info("\n🎉 Completed successfully!")
         else:
-            logger.warning("⚠️ No jobs scraped, skipping cleanup steps")
+            logger.warning("⚠️ No jobs scraped, skipping cleanup")
             if not scraping_success:
                 logger.error("❌ Failed to scrape jobs")
 

@@ -5,12 +5,14 @@ Scrapes missing company information from individual Jobindex job URLs
 and fills only missing fields in Supabase.
 
 Key features:
-- Keyset pagination over all active jobs with missing (company/company_url/description)
-- Robust Playwright setup (timeouts, retries, cookie banner handling)
-- Blocks heavy assets (images/fonts/media) but keeps CSS
-- Normalizes whitespace; resolves relative company URLs
-- Concurrency control + throttling
-- Safe updates: only fills NULL/empty DB fields
+- Robust keyset pagination that overkommer Supabase 1000-row limit
+  via komposit-cursor på (created_at DESC, job_id DESC) – undgår
+  både dubletter og huller når flere rækker har samme created_at.
+- Robust Playwright-setup (timeouts, retries, cookie-banner handling)
+- Blokerer tunge assets (images/fonts/media) men bevarer CSS
+- Normaliserer whitespace; resolver relative company-URLs
+- Concurrency-control + throttling
+- Sikker opdatering: udfylder kun NULL/tomme DB-felter
 """
 
 import asyncio
@@ -19,6 +21,7 @@ import os
 import re
 from typing import List, Dict, Optional
 from urllib.parse import urljoin
+from time import sleep
 
 from playwright.async_api import async_playwright
 from supabase import create_client, Client
@@ -37,7 +40,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# PostgREST OR filter for null or empty-string fields
+# PostgREST OR filter for null or empty-string fields (empty string is represented as eq.)
 EMPTY_STR_FILTER = (
     "company.is.null,company.eq.,"
     "company_url.is.null,company_url.eq.,"
@@ -141,27 +144,48 @@ class JobInfoScraper:
             self._browser = None
             self._context = None
 
-    # ---------- DB pagination ----------
+    # ---------- Supabase retry wrapper ----------
+    def _sb_retry(self, build_query_callable, tries: int = 3):
+        """Kør en Supabase query med simple retries/backoff."""
+        last_err = None
+        for i in range(tries):
+            try:
+                q = build_query_callable()
+                return q.execute()
+            except Exception as e:
+                last_err = e
+                if i < tries - 1:
+                    sleep(0.5 * (2 ** i))
+        raise last_err
+
+    # ---------- DB pagination (robust komposit-cursor) ----------
     def iter_missing_info_jobs(self, batch_size: int = 1000):
         """
-        Yield active jobs with missing company/company_url/description,
-        ordered by created_at DESC, using keyset pagination.
+        Yield aktive jobs med manglende company/company_url/description.
+        Keyset pagination på (created_at DESC, job_id DESC) for at undgå
+        dubletter/udfald når flere rækker deler samme created_at.
         """
-        last_created_at = None
-        while True:
-            q = (
-                self.supabase
-                .table("jobs")
-                .select("job_id, created_at")
-                .is_("deleted_at", "null")
-                .or_(EMPTY_STR_FILTER)
-                .order("created_at", desc=True)
-                .limit(batch_size)
-            )
-            if last_created_at:
-                q = q.lt("created_at", last_created_at)
+        last_created_at: Optional[str] = None
+        last_job_id: Optional[str] = None  # job_id er tekst (fx 'h1586919')
 
-            resp = q.execute()
+        while True:
+            def build_query():
+                q = (
+                    self.supabase
+                    .table("jobs")
+                    .select("job_id, created_at")
+                    .is_("deleted_at", "null")
+                    .or_(EMPTY_STR_FILTER)
+                    .order("created_at", desc=True)
+                    .order("job_id", desc=True)
+                    .limit(batch_size)
+                )
+                if last_created_at is not None and last_job_id is not None:
+                    # (created_at < last_created_at) OR (created_at = last_created_at AND job_id < last_job_id)
+                    q = q.or_(f"created_at.lt.{last_created_at},and(created_at.eq.{last_created_at},job_id.lt.{last_job_id})")
+                return q
+
+            resp = self._sb_retry(build_query)
             rows = resp.data or []
             if not rows:
                 break
@@ -169,7 +193,10 @@ class JobInfoScraper:
             for r in rows:
                 yield r
 
-            last_created_at = rows[-1]["created_at"]
+            # Sæt ny cursor til sidste række i den nuværende side
+            tail = rows[-1]
+            last_created_at = tail["created_at"]
+            last_job_id = tail["job_id"]
 
     # ---------- Helpers ----------
     @staticmethod
@@ -234,7 +261,7 @@ class JobInfoScraper:
                     except Exception:
                         pass
                     break
-                except Exception as e:
+                except Exception:
                     if attempt == 2:
                         raise
                     await asyncio.sleep(1 + attempt)
@@ -317,7 +344,6 @@ class JobInfoScraper:
 
             # Primary containers (structured)
             try:
-                # First paragraph inside structured robot job area
                 el = await page.query_selector(".jix_robotjob-inner p")
                 if el:
                     txt = self._normalize_whitespace(await el.inner_text() or "")
@@ -440,14 +466,16 @@ class JobInfoScraper:
                 return False
 
             # fetch current
-            current_resp = (
-                self.supabase
-                .table("jobs")
-                .select("title,company,location,description,company_url")
-                .eq("job_id", job_id)
-                .limit(1)
-                .execute()
-            )
+            def build_query_current():
+                return (
+                    self.supabase
+                    .table("jobs")
+                    .select("title,company,location,description,company_url")
+                    .eq("job_id", job_id)
+                    .limit(1)
+                )
+
+            current_resp = self._sb_retry(build_query_current)
             current = (current_resp.data or [{}])[0]
 
             def is_empty(val) -> bool:
@@ -462,13 +490,15 @@ class JobInfoScraper:
                 logger.info(f"ℹ️ No missing fields to update for job {job_id}")
                 return True
 
-            response = (
-                self.supabase
-                .table("jobs")
-                .update(update_data)
-                .eq("job_id", job_id)
-                .execute()
-            )
+            def build_update():
+                return (
+                    self.supabase
+                    .table("jobs")
+                    .update(update_data)
+                    .eq("job_id", job_id)
+                )
+
+            response = self._sb_retry(build_update)
             if response.data:
                 logger.info(f"🔧 Updated job {job_id} fields: {list(update_data.keys())}")
                 return True
@@ -561,36 +591,49 @@ class JobInfoScraper:
         logger.info(f"Successfully updated: {total_updated}")
         logger.info(f"Errors              : {total_errors}")
 
-    # ---------- Stats ----------
+    # ---------- Stats (server-side counts to avoid 1000-row cap) ----------
     def get_missing_info_stats(self) -> Dict:
         try:
-            resp = (
+            # Total aktive
+            total_resp = (
                 self.supabase
                 .table("jobs")
-                .select("company,company_url,description")
+                .select("id", count="exact")
                 .is_("deleted_at", "null")
                 .execute()
             )
-            data = resp.data or []
-            total_jobs = len(data)
-            missing_info = 0
-            missing_fields = {"company": 0, "company_url": 0, "description": 0}
+            total_jobs = total_resp.count or 0
 
-            for job in data:
-                has_missing = False
-                if not (job.get("company") or "").strip():
-                    missing_fields["company"] += 1
-                    has_missing = True
-                if not (job.get("company_url") or "").strip():
-                    missing_fields["company_url"] += 1
-                    has_missing = True
-                if not (job.get("description") or "").strip():
-                    missing_fields["description"] += 1
-                    has_missing = True
-                if has_missing:
-                    missing_info += 1
+            # Antal hvor mindst ét felt mangler
+            miss_resp = (
+                self.supabase
+                .table("jobs")
+                .select("id", count="exact")
+                .is_("deleted_at", "null")
+                .or_(EMPTY_STR_FILTER)
+                .execute()
+            )
+            missing_info = miss_resp.count or 0
 
-            pct = (missing_info / total_jobs * 100) if total_jobs > 0 else 0.0
+            # Nedbrydning pr. felt – hver for sig med count
+            def _count(filter_str: str) -> int:
+                r = (
+                    self.supabase
+                    .table("jobs")
+                    .select("id", count="exact")
+                    .is_("deleted_at", "null")
+                    .or_(filter_str)
+                    .execute()
+                )
+                return r.count or 0
+
+            missing_fields = {
+                "company": _count("company.is.null,company.eq."),
+                "company_url": _count("company_url.is.null,company_url.eq."),
+                "description": _count("description.is.null,description.eq."),
+            }
+
+            pct = (missing_info / total_jobs * 100) if total_jobs else 0.0
             return {
                 "total_jobs": total_jobs,
                 "missing_info": missing_info,
@@ -622,10 +665,10 @@ async def main():
             logger.info(f"  {field}: {count} jobs ({pct:.1f}%)")
 
         await scraper.process_jobs_with_missing_info(
-            max_jobs=None,   # set an integer for testing (e.g., 50)
-            delay=1.5,       # polite throttle between tasks
-            concurrency=3,   # parallel tabs
-            batch_flush=200, # flush gather every N tasks
+            max_jobs=None,   # sæt et tal for test (fx 50)
+            delay=1.5,       # høflig throttle mellem tasks
+            concurrency=3,   # parallelle faner
+            batch_flush=200, # flush gather hver N tasks
         )
 
         final = scraper.get_missing_info_stats()

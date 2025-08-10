@@ -1,423 +1,339 @@
 #!/usr/bin/env python3
 """
-Job Embedding Generator
+Job Embedding Generator (kvalitet først)
 
-This script generates vector embeddings for job records in the database.
-It uses OpenAI's text-embedding-3-large model to create embeddings from
-job titles, descriptions, and company information.
+- Bruger OpenAI text-embedding-3-large (3072 dims)
+- Genererer/regenere embeddings KUN når fingerprint af (title, company, location, description)
+  har ændret sig.
+- Bevarer næsten hele teksten (klipper kun hvis vi er meget tæt på modelgrænser).
+- Batch-kald for performance, men ingen kvalitetstab.
+
+Kræver env:
+  SUPABASE_URL
+  SUPABASE_SERVICE_ROLE_KEY (eller SUPABASE_ANON_KEY – service role anbefales til batch-opdateringer)
+  OPENAI_API_KEY
+  (valgfrit) EMBEDDING_MODEL (default: text-embedding-3-large)
 """
 
 import asyncio
+import hashlib
 import logging
 import os
-from typing import List, Dict, Optional
-from supabase import create_client, Client
-from openai import AsyncOpenAI
+import re
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
-# Load environment variables from .env file if it exists
+from openai import AsyncOpenAI
+from supabase import Client, create_client
+
+# Load .env hvis tilgængelig
 try:
     from dotenv import load_dotenv
     load_dotenv()
-except ImportError:
-    pass  # dotenv not installed, continue without it
+except Exception:
+    pass
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("job-embeddings")
 
+
+# ---------- Utils ----------
+def _norm(t: str) -> str:
+    """Let whitespace-normalisering (bevar indhold)."""
+    t = (t or "").strip()
+    return re.sub(r"\s+", " ", t)
+
+
+def make_fingerprint(job: Dict) -> str:
+    """
+    Fingerprint af felter der definerer embeddingens semantik.
+    Hvis nogen ændres → regenerer.
+    """
+    parts = [
+        _norm(job.get("title", "")),
+        _norm(job.get("company", "")),
+        _norm(job.get("location", "")),
+        _norm(job.get("description", "")),
+    ]
+    s = " | ".join(parts)
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+# ---------- Generator ----------
 class JobEmbeddingGenerator:
-    def __init__(self, supabase_url=None, supabase_key=None, openai_api_key=None):
-        # Initialize Supabase client
-        self.supabase_url = supabase_url or os.getenv('SUPABASE_URL')
-        self.supabase_key = supabase_key or os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_ANON_KEY')
-        
-        if self.supabase_url and self.supabase_key:
-            self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
-            # Log which key type is being used
-            if os.getenv('SUPABASE_SERVICE_ROLE_KEY'):
-                logger.info("Supabase client initialized with SERVICE_ROLE_KEY (RLS bypass)")
-            else:
-                logger.info("Supabase client initialized with ANON_KEY")
-        else:
-            self.supabase = None
-            logger.error("Supabase credentials not provided. Cannot proceed.")
-            raise ValueError("Supabase credentials required")
-        
-        # Initialize OpenAI client
-        self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
-        if self.openai_api_key:
-            self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
-            logger.info("OpenAI client initialized")
-        else:
-            self.openai_client = None
-            logger.error("OpenAI API key not provided. Cannot proceed.")
-            raise ValueError("OpenAI API key required")
-        
-        # Configure embedding model (best-quality by default)
-        self.embedding_model = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-large')
+    def __init__(
+        self,
+        supabase_url: Optional[str] = None,
+        supabase_key: Optional[str] = None,
+        openai_api_key: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+        use_pgvector: bool = True,
+    ):
+        # Supabase
+        self.supabase_url = supabase_url or os.getenv("SUPABASE_URL")
+        self.supabase_key = (
+            supabase_key
+            or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+            or os.getenv("SUPABASE_ANON_KEY")
+        )
+
+        if not (self.supabase_url and self.supabase_key):
+            raise ValueError("Supabase credentials required (URL + KEY).")
+
+        self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+        logger.info(
+            "Supabase client initialized with %s",
+            "SERVICE_ROLE_KEY" if os.getenv("SUPABASE_SERVICE_ROLE_KEY") else "ANON_KEY",
+        )
+
+        # OpenAI
+        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY required.")
+        self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
+
+        # Model
+        self.embedding_model = embedding_model or os.getenv(
+            "EMBEDDING_MODEL", "text-embedding-3-large"
+        )
         logger.info(f"Using embedding model: {self.embedding_model}")
-    
-    def get_jobs_without_embeddings(self, max_jobs=None) -> List[Dict]:
+
+        # Lager-type: pgvector vs. float8[] (fallback)
+        self.use_pgvector = use_pgvector  # kun informativt i dette script
+        if not use_pgvector:
+            logger.info("Using float8[] fallback for 'embedding' column (no pgvector).")
+
+        # Tekstlængde-konfiguration (kvalitet først)
+        self.MAX_CHARS = 7500  # rigeligt under modelgrænsen
+
+    # ---------- Udvælg kandidater ----------
+    def get_candidates(self, max_jobs: Optional[int] = None) -> List[Dict]:
         """
-        Get jobs that don't have embeddings yet and have CFO score >= 1
-        
-        Args:
-            max_jobs: Maximum number of jobs to fetch (for testing)
-        
-        Returns:
-            List of job dictionaries
+        Hent aktive jobs (cfo_score >= 1) og beslut lokalt om de skal (re)embeddes
+        ved fingerprint-sammenligning.
         """
-        try:
-            # Get jobs that don't have embeddings, are not deleted, and have CFO score >= 1
-            query = self.supabase.table('jobs').select('*').is_('deleted_at', 'null').is_('embedding', 'null').gte('cfo_score', 1)
-            
-            if max_jobs:
-                query = query.limit(max_jobs)
-            
-            response = query.execute()
-            
-            if response.data:
-                logger.info(f"Retrieved {len(response.data)} jobs without embeddings and with CFO score >= 1")
-                return response.data
-            else:
-                logger.info("No jobs found without embeddings and with CFO score >= 1")
-                return []
-                
-        except Exception as e:
-            logger.error(f"Error fetching jobs from database: {e}")
-            return []
-    
+        query = (
+            self.supabase.table("jobs")
+            .select(
+                "id,job_id,title,company,location,description,"
+                "embedding,embedding_fingerprint,cfo_score,deleted_at"
+            )
+            .is_("deleted_at", "null")
+            .gte("cfo_score", 1)
+            .order("id", desc=False)
+        )
+        if max_jobs:
+            query = query.limit(max_jobs)
+
+        resp = query.execute()
+        rows = resp.data or []
+
+        # Lokal beslutning: (re)embed hvis ingen embedding, intet fingerprint eller mismatch
+        def should_embed(job: Dict) -> bool:
+            new_fp = make_fingerprint(job)
+            old_fp = job.get("embedding_fingerprint")
+            has_embedding = job.get("embedding") is not None
+            return (not has_embedding) or (not old_fp) or (old_fp != new_fp)
+
+        candidates = [r for r in rows if should_embed(r)]
+        logger.info(
+            "Kandidater fundet: %d (ud af %d hentede).", len(candidates), len(rows)
+        )
+        return candidates
+
+    # ---------- Tekst til embedding ----------
     def create_embedding_text(self, job: Dict) -> str:
-        """
-        Create optimal text for embedding with balanced weighting
-        
-        Args:
-            job: Job dictionary
-        
-        Returns:
-            Formatted text string for embedding
-        """
-        # Extract job data
-        title = job.get('title', '') or ''
-        company = job.get('company', '') or ''
-        location = job.get('location', '') or ''
-        description = job.get('description', '') or ''
-        
-        # Strip whitespace
-        title = title.strip()
-        company = company.strip()
-        location = location.strip()
-        description = description.strip()
+        title = _norm(job.get("title", "") or "Job")
+        company = _norm(job.get("company", "") or "Company")
+        location = _norm(job.get("location", "") or "Location not specified")
+        desc = _norm(job.get("description", "") or "")
 
-        # Create optimal embedding text with balanced weighting
-        # Strategy: Emphasize company and title while keeping full description
-        # Format: Company - Title. Location. Full description with company/title repeated
-        
-        # Clean and prepare text components
-        if not title:
-            title = "Job"
-        if not company:
-            company = "Company"
-        if not location:
-            location = "Location not specified"
-        
-        # Create weighted description that repeats company and title for emphasis
-        weighted_description = f"{company} - {title}. {description}"
-        
-        # Create final embedding text with enhanced searchability
-        # Give maximum weight to location, company, and title by repeating them multiple times
-        # This makes the embeddings more sensitive to location and company searches
-        embedding_text = f"""Location: {location}
-Company: {company}
-Title: {title}
-Location: {location}
-Company: {company}
-{company} - {title}
-Location: {location}
-Description: {weighted_description}"""
-        
-        # Clean up the text
-        embedding_text = embedding_text.strip()
-        
-        # If text is too long, truncate it (OpenAI has a limit of 8191 tokens)
-        if len(embedding_text) > 8000:
-            # Keep the most important parts (location, company, title) and truncate description
-            important_parts = f"""Location: {location}
-Company: {company}
-Title: {title}
-Location: {location}
-Company: {company}
-{company} - {title}
-Location: {location}
-Description: {company} - {title}. """
-            remaining_length = 8000 - len(important_parts)
-            if remaining_length > 0:
-                truncated_description = description[:remaining_length] + "..."
-                embedding_text = important_parts + truncated_description
-            else:
-                embedding_text = important_parts + description[:100] + "..."
+        head = f"Company: {company}\nTitle: {title}\nLocation: {location}\n"
+        body = f"Description: {company} - {title}. {desc}".strip()
 
-        return embedding_text
-    
-    async def generate_embedding(self, text: str) -> Optional[List[float]]:
-        """
-        Generate embedding for text using OpenAI API
-        
-        Args:
-            text: Text to embed
-        
-        Returns:
-            List of floats representing the embedding vector
-        """
-        for attempt in range(3):
-            try:
-                response = await self.openai_client.embeddings.create(
-                    model=self.embedding_model,
-                    input=text
-                )
-                embedding = response.data[0].embedding
-                logger.debug(f"Generated embedding with {len(embedding)} dimensions")
-                return embedding
-            except Exception as e:
-                if attempt < 2:
-                    backoff_seconds = 2 ** attempt
-                    logger.warning(f"Embedding request failed (attempt {attempt + 1}/3). Retrying in {backoff_seconds}s: {e}")
-                    await asyncio.sleep(backoff_seconds)
-                else:
-                    logger.error(f"Error generating embedding after retries: {e}")
-                    return None
+        text = f"{head}{body}".strip()
 
-    async def generate_embeddings_batch(self, texts: List[str], model: Optional[str] = None) -> Optional[List[List[float]]]:
-        """
-        Generate embeddings for a batch of texts in one API call.
-        """
+        # Bevar så meget som muligt; klip kun hvis meget lang
+        if len(text) > self.MAX_CHARS:
+            keep_head = head
+            remaining = self.MAX_CHARS - len(keep_head) - len("Description: ")
+            clipped = (f"{company} - {title}. " + desc)[: max(0, remaining)] + "…"
+            text = keep_head + "Description: " + clipped
+
+        return text
+
+    # ---------- OpenAI-kald ----------
+    async def generate_embeddings_batch(
+        self, texts: List[str], model: Optional[str] = None
+    ) -> Optional[List[List[float]]]:
         use_model = model or self.embedding_model
+        last_err = None
         for attempt in range(3):
             try:
-                response = await self.openai_client.embeddings.create(
-                    model=use_model,
-                    input=texts
+                res = await self.openai_client.embeddings.create(
+                    model=use_model, input=texts
                 )
-                return [item.embedding for item in response.data]
+                return [item.embedding for item in res.data]
             except Exception as e:
-                if attempt < 2:
-                    backoff_seconds = 2 ** attempt
-                    logger.warning(f"Batch embedding request failed (attempt {attempt + 1}/3). Retrying in {backoff_seconds}s: {e}")
-                    await asyncio.sleep(backoff_seconds)
-                else:
-                    logger.error(f"Batch embedding error after retries: {e}")
-                    return None
-    
-    def update_job_embedding(self, job_id: int, embedding: List[float]) -> bool:
-        """
-        Update the job embedding in the database
-        
-        Args:
-            job_id: Job ID (bigint primary key)
-            embedding: Embedding vector as list of floats
-        
-        Returns:
-            True if successful, False otherwise
-        """
+                last_err = e
+                wait = 2 ** attempt
+                logger.warning(
+                    "Batch embedding fejlede (forsøg %d/3): %s. Prøver igen om %ss",
+                    attempt + 1,
+                    e,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+        logger.error("Batch embedding mislykkedes efter 3 forsøg: %s", last_err)
+        return None
+
+    # ---------- DB update ----------
+    def _update_embedding_row(self, job: Dict, embedding: List[float]) -> bool:
+        new_fp = make_fingerprint(job)
+        payload = {
+            "embedding": list(embedding),
+            "embedding_fingerprint": new_fp,
+            "embedding_created_at": datetime.now(timezone.utc).isoformat(),
+        }
         try:
-            # Convert embedding to proper format for Supabase
-            embedding_array = list(embedding)  # Ensure it's a list
-            
-            from datetime import datetime, timezone
-            response = self.supabase.table('jobs').update({
-                'embedding': embedding_array,
-                'embedding_created_at': datetime.now(timezone.utc).isoformat()
-            }).eq('id', job_id).execute()
-            
-            if response.data:
-                logger.debug(f"Updated embedding for job ID {job_id}")
-                return True
-            else:
-                logger.error(f"Failed to update embedding for job ID {job_id}")
-                return False
-                
+            resp = (
+                self.supabase.table("jobs")
+                .update(payload)
+                .eq("id", job["id"])  # brug id; skift til job_id hvis det er din stabile nøgle
+                .execute()
+            )
+            return bool(resp.data)
         except Exception as e:
-            logger.error(f"Error updating embedding for job ID {job_id}: {e}")
+            logger.error("DB update fejlede for job id=%s: %s", job.get("id"), e)
             return False
-    
-    async def process_job_embedding(self, job: Dict) -> bool:
-        """
-        Process a single job to generate and store its embedding
-        
-        Args:
-            job: Job dictionary
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Create text for embedding
-            embedding_text = self.create_embedding_text(job)
-            
-            if not embedding_text.strip():
-                logger.warning(f"No text content for job ID {job.get('id')}, skipping")
-                return False
-            
-            # Generate embedding
-            embedding = await self.generate_embedding(embedding_text)
-            
-            if embedding is None:
-                logger.error(f"Failed to generate embedding for job ID {job.get('id')}")
-                return False
-            
-            # Update database
-            success = self.update_job_embedding(job['id'], embedding)
-            
-            if success:
-                logger.debug(f"Successfully processed embedding for job '{job.get('title')}' (ID: {job.get('id')})")
-            
-            return success
-                
-        except Exception as e:
-            logger.error(f"Error processing job ID {job.get('id')}: {e}")
-            return False
-    
-    async def generate_all_embeddings(self, batch_size=10, max_jobs=None, delay=1.0):
-        """
-        Generate embeddings for all jobs that don't have them
-        
-        Args:
-            batch_size: Number of jobs to process in parallel
-            max_jobs: Maximum number of jobs to process (for testing)
-            delay: Delay between batches in seconds (to respect API rate limits)
-        """
-        # Get jobs without embeddings and with CFO score >= 1
-        jobs = self.get_jobs_without_embeddings(max_jobs)
-        
+
+    # ---------- Orkestrering ----------
+    async def generate_all_embeddings(
+        self, batch_size: int = 32, max_jobs: Optional[int] = None, delay: float = 0.5
+    ):
+        jobs = self.get_candidates(max_jobs)
         if not jobs:
-            logger.info("No jobs found without embeddings and with CFO score >= 1")
+            logger.info("Alle embeddings er up-to-date (fingerprints matcher).")
             return
-        
-        logger.info(f"Starting to generate embeddings for {len(jobs)} jobs with CFO score >= 1")
-        
-        # Process jobs in batches with single API call per batch
-        total_processed = 0
-        total_errors = 0
+
+        logger.info("Skal generere/regenerere embeddings for %d job(s).", len(jobs))
+
+        total_ok = 0
+        total_err = 0
 
         for i in range(0, len(jobs), batch_size):
-            batch = jobs[i:i + batch_size]
-            batch_num = i // batch_size + 1
-            total_batches = (len(jobs) + batch_size - 1) // batch_size
+            batch = jobs[i : i + batch_size]
+            bno = i // batch_size + 1
+            btot = (len(jobs) + batch_size - 1) // batch_size
+            logger.info("Behandler batch %d/%d (%d jobs)", bno, btot, len(batch))
 
-            logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} jobs)")
+            # For kvalitets-søgning: skab tekster (dedupliker identiske tekster for at spare kald)
+            texts = [self.create_embedding_text(j) for j in batch]
+            text_to_indices: Dict[str, List[int]] = {}
+            for idx, t in enumerate(texts):
+                text_to_indices.setdefault(t, []).append(idx)
+            unique_texts = list(text_to_indices.keys())
 
-            texts = [self.create_embedding_text(job) for job in batch]
-            # Deduplicate identical texts to avoid recompute (use text itself as key to avoid hash collisions)
-            text_to_indices_map: Dict[str, List[int]] = {}
-            for idx, text in enumerate(texts):
-                if text not in text_to_indices_map:
-                    text_to_indices_map[text] = [idx]
-                else:
-                    text_to_indices_map[text].append(idx)
-
-            unique_texts = list(text_to_indices_map.keys())
-            embeddings = await self.generate_embeddings_batch(unique_texts)
-            if embeddings is None:
-                total_errors += len(batch)
+            embs_unique = await self.generate_embeddings_batch(unique_texts)
+            if embs_unique is None:
+                total_err += len(batch)
                 continue
 
-            # Map embeddings back to jobs
-            text_to_embedding = {unique_texts[i]: embeddings[i] for i in range(len(unique_texts))}
+            # Map embeddings tilbage til hver post
+            ok_in_batch = 0
+            for utxt, emb in zip(unique_texts, embs_unique):
+                for idx in text_to_indices[utxt]:
+                    job = batch[idx]
+                    if self._update_embedding_row(job, emb):
+                        ok_in_batch += 1
+                    else:
+                        total_err += 1
 
-            success_in_batch = 0
-            for idx, job in enumerate(batch):
-                emb = text_to_embedding.get(texts[idx])
-                if emb is None:
-                    total_errors += 1
-                    logger.error(f"Missing embedding for job ID {job.get('id')}")
-                    continue
-                if self.update_job_embedding(job['id'], emb):
-                    success_in_batch += 1
-                else:
-                    total_errors += 1
+            total_ok += ok_in_batch
+            logger.info(
+                "Batch %d/%d færdig: %d/%d opdateret.",
+                bno,
+                btot,
+                ok_in_batch,
+                len(batch),
+            )
 
-            total_processed += success_in_batch
-
-            # Progress update
-            progress = (total_processed + total_errors) / len(jobs) * 100
-            logger.info(f"Progress: {progress:.1f}% ({total_processed + total_errors}/{len(jobs)})")
-
-            if i + batch_size < len(jobs):
+            if i + batch_size < len(jobs) and delay > 0:
                 await asyncio.sleep(delay)
-        
-        # Final summary
+
         logger.info("=== EMBEDDING GENERATION COMPLETE ===")
-        logger.info(f"Total jobs processed (CFO score >= 1): {len(jobs)}")
-        logger.info(f"Successfully processed: {total_processed}")
-        logger.info(f"Errors: {total_errors}")
-    
+        logger.info("Jobs planlagt: %d", len(jobs))
+        logger.info("Opdateret OK: %d", total_ok)
+        logger.info("Fejl: %d", total_err)
+
+    # ---------- Stats ----------
     def get_embedding_stats(self) -> Dict:
-        """
-        Get statistics about job embeddings (only for jobs with CFO score >= 1)
-        
-        Returns:
-            Dictionary with embedding statistics
-        """
         try:
-            # Get total jobs with CFO score >= 1
-            total_response = self.supabase.table('jobs').select('id', count='exact').is_('deleted_at', 'null').gte('cfo_score', 1).execute()
-            total_relevant_jobs = total_response.count if total_response.count is not None else 0
-            
-            # Get jobs with embeddings and CFO score >= 1
-            embedded_response = self.supabase.table('jobs').select('id', count='exact').is_('deleted_at', 'null').gte('cfo_score', 1).not_.is_('embedding', 'null').execute()
-            embedded_relevant_jobs = embedded_response.count if embedded_response.count is not None else 0
-            
-            # Get jobs without embeddings but with CFO score >= 1
-            jobs_needing_embeddings = total_relevant_jobs - embedded_relevant_jobs
-            
+            total_resp = (
+                self.supabase.table("jobs")
+                .select("id", count="exact")
+                .is_("deleted_at", "null")
+                .gte("cfo_score", 1)
+                .execute()
+            )
+            total_rel = total_resp.count or 0
+
+            with_emb_resp = (
+                self.supabase.table("jobs")
+                .select("id", count="exact")
+                .is_("deleted_at", "null")
+                .gte("cfo_score", 1)
+                .not_.is_("embedding", "null")
+                .execute()
+            )
+            with_emb = with_emb_resp.count or 0
+
             return {
-                "total_relevant_jobs": total_relevant_jobs,
-                "jobs_with_embeddings": embedded_relevant_jobs,
-                "jobs_needing_embeddings": jobs_needing_embeddings,
-                "embedding_coverage": (embedded_relevant_jobs / total_relevant_jobs * 100) if total_relevant_jobs > 0 else 0
+                "total_relevant_jobs": total_rel,
+                "jobs_with_embeddings": with_emb,
+                "jobs_needing_embeddings": max(0, total_rel - with_emb),
+                "embedding_coverage": (with_emb / total_rel * 100) if total_rel else 0,
             }
-            
         except Exception as e:
-            logger.error(f"Error getting embedding stats: {e}")
+            logger.error("Fejl ved stats: %s", e)
             return {
                 "total_relevant_jobs": 0,
                 "jobs_with_embeddings": 0,
                 "jobs_needing_embeddings": 0,
-                "embedding_coverage": 0
+                "embedding_coverage": 0,
             }
 
+
+# ---------- Main ----------
 async def main():
-    """Main function to run the embedding generator"""
-    try:
-        # Initialize the embedding generator
-        generator = JobEmbeddingGenerator()
-        
-        # Print initial statistics
-        stats = generator.get_embedding_stats()
-        logger.info("=== INITIAL STATISTICS ===")
-        logger.info(f"Total relevant jobs (CFO score >= 1): {stats['total_relevant_jobs']}")
-        logger.info(f"Jobs with embeddings: {stats['jobs_with_embeddings']}")
-        logger.info(f"Jobs needing embeddings: {stats['jobs_needing_embeddings']}")
-        logger.info(f"Embedding coverage: {stats['embedding_coverage']:.1f}%")
-        
-        # Generate embeddings (limited to 1000 jobs per run)
-        await generator.generate_all_embeddings(
-            batch_size=5,  # Conservative batch size for API rate limits
-            max_jobs=1000,  # Limited to 1000 jobs per run
-            delay=2.0  # 2 second delay between batches
-        )
-        
-        # Print final statistics
-        final_stats = generator.get_embedding_stats()
-        logger.info("=== FINAL STATISTICS ===")
-        logger.info(f"Total relevant jobs (CFO score >= 1): {final_stats['total_relevant_jobs']}")
-        logger.info(f"Jobs with embeddings: {final_stats['jobs_with_embeddings']}")
-        logger.info(f"Jobs needing embeddings: {final_stats['jobs_needing_embeddings']}")
-        logger.info(f"Embedding coverage: {final_stats['embedding_coverage']:.1f}%")
-        
-    except Exception as e:
-        logger.error(f"Error in main: {e}")
-        raise
+    gen = JobEmbeddingGenerator(
+        use_pgvector=True  # sæt False hvis du kører fallback (float8[])
+    )
+
+    stats = gen.get_embedding_stats()
+    logger.info("=== INITIAL STATISTICS ===")
+    logger.info("Total relevant jobs (cfo_score >= 1): %s", stats["total_relevant_jobs"])
+    logger.info("Jobs with embeddings: %s", stats["jobs_with_embeddings"])
+    logger.info("Jobs needing embeddings: %s", stats["jobs_needing_embeddings"])
+    logger.info("Embedding coverage: %.1f%%", stats["embedding_coverage"])
+
+    await gen.generate_all_embeddings(
+        batch_size=32,   # større batch er fint – få daglige opgaver
+        max_jobs=None,   # processér alle kandidater
+        delay=0.5
+    )
+
+    final = gen.get_embedding_stats()
+    logger.info("=== FINAL STATISTICS ===")
+    logger.info("Total relevant jobs (cfo_score >= 1): %s", final["total_relevant_jobs"])
+    logger.info("Jobs with embeddings: %s", final["jobs_with_embeddings"])
+    logger.info("Jobs needing embeddings: %s", final["jobs_needing_embeddings"])
+    logger.info("Embedding coverage: %.1f%%", final["embedding_coverage"])
+
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
