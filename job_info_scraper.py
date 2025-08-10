@@ -25,6 +25,14 @@ from time import sleep
 
 from playwright.async_api import async_playwright
 from supabase import create_client, Client
+try:  # optional fast-path deps
+    import httpx  # type: ignore
+except Exception:  # pragma: no cover
+    httpx = None  # type: ignore
+try:
+    from bs4 import BeautifulSoup  # type: ignore
+except Exception:  # pragma: no cover
+    BeautifulSoup = None  # type: ignore
 
 # --------- ENV ---------
 try:
@@ -72,6 +80,9 @@ class JobInfoScraper:
         self._playwright = None
         self._browser = None
         self._context = None
+
+        # HTTP client (fast path)
+        self._http_client: Optional["httpx.AsyncClient"] = None
 
     # ---------- Browser lifecycle ----------
     async def setup_browser(self):
@@ -125,7 +136,7 @@ class JobInfoScraper:
         # Block heavy assets (keep CSS)
         async def route_interceptor(route):
             req = route.request
-            if req.resource_type in {"image", "font", "media"}:
+            if req.resource_type in {"image", "font", "media", "script"}:
                 return await route.abort()
             return await route.continue_()
 
@@ -143,6 +154,31 @@ class JobInfoScraper:
             self._playwright = None
             self._browser = None
             self._context = None
+
+    # ---------- HTTP client lifecycle (fast path) ----------
+    async def setup_http_client(self):
+        if self._http_client is not None or httpx is None:
+            return
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        timeout = httpx.Timeout(15.0, connect=10.0, read=15.0)
+        self._http_client = httpx.AsyncClient(http2=True, headers=headers, timeout=timeout, follow_redirects=True)
+
+    async def teardown_http_client(self):
+        if self._http_client is not None:
+            try:
+                await self._http_client.aclose()
+            finally:
+                self._http_client = None
 
     # ---------- Supabase retry wrapper ----------
     def _sb_retry(self, build_query_callable, tries: int = 3):
@@ -235,6 +271,142 @@ class JobInfoScraper:
             pass
 
     # ---------- Scrape single job ----------
+    async def scrape_job_info_http(self, job_id: str) -> Optional[Dict]:
+        """Fast path: fetch and parse with HTTP client. Fallback to browser if needed."""
+        await self.setup_http_client()
+        if self._http_client is None or BeautifulSoup is None:
+            return None
+        job_url = f"{self.base_url}/vis-job/{job_id}"
+        info: Dict[str, Optional[str]] = {}
+        last_err: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                resp = await self._http_client.get(job_url)
+                if resp.status_code >= 400:
+                    last_err = RuntimeError(f"HTTP {resp.status_code}")
+                    await asyncio.sleep(0.3 * (attempt + 1))
+                    continue
+                html = resp.text
+                soup = BeautifulSoup(html, "lxml")
+
+                # ------- Title -------
+                title = None
+                t_el = soup.select_one("h1.sr-only") or soup.select_one("h4 a") or soup.select_one("h1")
+                if t_el and t_el.get_text(strip=True):
+                    title = self._normalize_whitespace(t_el.get_text(" "))
+                if not title:
+                    pt = soup.title.get_text(strip=True) if soup.title else None
+                    if pt and " | Job" in pt:
+                        title = self._normalize_whitespace(pt.split(" | Job")[0])
+                if title and title.startswith("Jobannonce: "):
+                    title = title[len("Jobannonce: ") :].strip()
+                info["title"] = title
+
+                # ------- Company + URL -------
+                company_name = None
+                company_url = None
+                comp_el = soup.select_one(".jix-toolbar-top__company")
+                if comp_el:
+                    raw = self._normalize_whitespace(comp_el.get_text(" ") or "") or ""
+                    if raw.endswith(" søger for kunde"):
+                        raw = raw.replace(" søger for kunde", "").strip()
+                    company_name = raw or None
+                    link_el = comp_el.select_one("a")
+                    if link_el and link_el.get("href"):
+                        company_url = self._abs_url(link_el.get("href"))
+                # Fallbacks
+                if not company_name:
+                    job_link = soup.select_one("h4 a")
+                    if job_link and job_link.get("href") and "frivilligjob.dk" in job_link.get("href") and title and " - " in title:
+                        company_name = title.split(" - ")[-1].strip()
+                if not company_name:
+                    body_text = self._normalize_whitespace(soup.get_text(" ") or "") or ""
+                    for pat in [
+                        r"([A-ZÆØÅ][A-Za-zÆØÅæøå0-9&\.\-\s]+?)\s+A/S",
+                        r"([A-ZÆØÅ][A-Za-zÆØÅæøå0-9&\.\-\s]+?)\s+ApS",
+                    ]:
+                        m = re.search(pat, body_text, re.IGNORECASE)
+                        if m:
+                            company_name = self._normalize_whitespace(m.group(1))
+                            break
+                info["company"] = company_name
+                info["company_url"] = company_url
+
+                # ------- Description -------
+                description = None
+                primary = soup.select_one(".jix_robotjob-inner")
+                if primary:
+                    # prefer first long <p>
+                    p = next((p for p in primary.find_all("p") if self._normalize_whitespace(p.get_text(" ") or "") and len(self._normalize_whitespace(p.get_text(" ") or "")) > 40), None)
+                    if p:
+                        description = self._normalize_whitespace(p.get_text(" ") or "")
+                if not description:
+                    job_content = soup.select_one(".PaidJob-inner") or primary
+                    if job_content:
+                        parts: List[str] = []
+                        for p in job_content.find_all("p"):
+                            t = self._normalize_whitespace(p.get_text(" ") or "")
+                            if t and len(t) > 40:
+                                parts.append(t)
+                        if parts:
+                            description = " ".join(parts)
+                if not description:
+                    body_text = self._normalize_whitespace(soup.get_text(" ") or "") or ""
+                    patterns = [
+                        r"(?:Vi søger|We are looking for|We seek).*?(?=\n\n|\n[A-ZÆØÅ]|$)",
+                        r"(?:Jobbet|The position|The role).*?(?=\n\n|\n[A-ZÆØÅ]|$)",
+                        r"(?:Ansvar|Responsibilities|Duties).*?(?=\n\n|\n[A-ZÆØÅ]|$)",
+                    ]
+                    for pat in patterns:
+                        matches = re.findall(pat, body_text, re.DOTALL | re.IGNORECASE)
+                        if matches:
+                            cand = self._normalize_whitespace(matches[0])
+                            if cand and len(cand) > 40:
+                                description = cand
+                                break
+                if description:
+                    for pat in [
+                        r"Indrykket:.*?(?=\n|$)",
+                        r"Hentet fra.*?(?=\n|$)",
+                        r"Se jobbet.*?(?=\n|$)",
+                        r"Anbefalede job.*?(?=\n|$)",
+                        r"Gem.*?(?=\n|$)",
+                        r"Del.*?(?=\n|$)",
+                        r"Kopier.*?(?=\n|$)",
+                        r"For jobsøgere.*?(?=\n|$)",
+                        r"For arbejdsgivere.*?(?=\n|$)",
+                        r"Jobsøgning.*?(?=\n|$)",
+                        r"Arbejdspladser.*?(?=\n|$)",
+                        r"Test dig selv.*?(?=\n|$)",
+                        r"Guides.*?(?=\n|$)",
+                        r"Kurser.*?(?=\n|$)",
+                        r"Log ind.*?(?=\n|$)",
+                        r"Opret profil.*?(?=\n|$)",
+                    ]:
+                        description = re.sub(pat, "", description, flags=re.IGNORECASE)
+                    description = self._normalize_whitespace(description)
+                    if description and len(description) < 20:
+                        description = None
+                info["description"] = description
+
+                # ------- Location -------
+                location = None
+                loc_el = soup.select_one(".jix_robotjob--area, .location, .job-location, .place")
+                if loc_el:
+                    location = self._normalize_whitespace(loc_el.get_text(" ") or "")
+                if location:
+                    info["location"] = location
+
+                logger.info(
+                    f"⚡ HTTP scraped {job_id} | title='{info.get('title')}', company='{info.get('company')}', desc_len={len(info.get('description') or '')}"
+                )
+                return info
+            except Exception as e:
+                last_err = e
+                await asyncio.sleep(0.3 * (attempt + 1))
+        logger.warning(f"HTTP scrape failed for {job_id}: {last_err}")
+        return None
+
     async def scrape_job_info(self, job_id: str, page=None) -> Optional[Dict]:
         job_url = f"{self.base_url}/vis-job/{job_id}"
         created_temp_page = False
@@ -522,7 +694,8 @@ class JobInfoScraper:
         Process all jobs with missing info using keyset pagination.
         Limits concurrency and throttles between tasks.
         """
-        await self.setup_browser()
+        # Note: defer browser setup until needed (fallback), but create HTTP client now
+        await self.setup_http_client()
         semaphore = asyncio.Semaphore(max(1, int(concurrency)))
 
         total_seen = 0
@@ -539,24 +712,36 @@ class JobInfoScraper:
 
             async with semaphore:
                 logger.info(f"➡️  Processing #{job_idx}: {job_id}")
-                page = await self._context.new_page()
-                page.set_default_timeout(45000)
-                page.set_default_navigation_timeout(45000)
                 try:
-                    info = await self.scrape_job_info(job_id, page=page)
-                    if info and self.update_job_info(job_id, info):
-                        total_updated += 1
+                    # 1) Fast path: HTTP fetch + parse
+                    info = await self.scrape_job_info_http(job_id)
+                    updated = False
+                    if info:
+                        updated = self.update_job_info(job_id, info)
+                    # 2) Fallback to Playwright if HTTP failed to update
+                    if not updated:
+                        await self.setup_browser()
+                        page = await self._context.new_page()
+                        page.set_default_timeout(45000)
+                        page.set_default_navigation_timeout(45000)
+                        try:
+                            info_pw = await self.scrape_job_info(job_id, page=page)
+                            if info_pw and self.update_job_info(job_id, info_pw):
+                                total_updated += 1
+                            else:
+                                total_errors += 1
+                        finally:
+                            try:
+                                await page.close()
+                            except Exception:
+                                pass
                     else:
-                        total_errors += 1
+                        total_updated += 1
                 except Exception as e:
                     total_errors += 1
                     logger.error(f"❌ Error processing job {job_id}: {e}")
                 finally:
                     total_processed += 1
-                    try:
-                        await page.close()
-                    except Exception:
-                        pass
                     if delay and delay > 0:
                         await asyncio.sleep(delay)
 
@@ -583,6 +768,7 @@ class JobInfoScraper:
         except KeyboardInterrupt:
             logger.warning("Interrupted by user.")
         finally:
+            await self.teardown_http_client()
             await self.teardown_browser()
 
         logger.info("=== PROCESSING COMPLETE ===")
@@ -666,9 +852,9 @@ async def main():
 
         await scraper.process_jobs_with_missing_info(
             max_jobs=None,   # sæt et tal for test (fx 50)
-            delay=1.5,       # høflig throttle mellem tasks
-            concurrency=3,   # parallelle faner
-            batch_flush=200, # flush gather hver N tasks
+            delay=float(os.getenv("SCRAPER_DELAY", "0.2")),
+            concurrency=int(os.getenv("SCRAPER_CONCURRENCY", "10")),
+            batch_flush=int(os.getenv("SCRAPER_BATCH_FLUSH", "500")),
         )
 
         final = scraper.get_missing_info_stats()
