@@ -178,14 +178,40 @@ class JobScraperAndCleanup:
                             return False
 
                 async def goto_next_page():
-                    """Deterministic pagination only: bump ?page= and validate."""
+                    """Deterministic pagination only: bump ?page= and validate.
+                    Retries with backoff to survive occasional slow pages.
+                    """
                     target = _next_search_url(page.url)
-                    await page.goto(target, wait_until="domcontentloaded", timeout=25000)
-                    if not urlparse(page.url).path.startswith(SEARCH_PATH_PREFIX):
-                        return False
-                    # don’t over-wait; just do a quick readiness check
-                    _ = await quick_ready()
-                    return True
+                    base_timeout_ms = 25000
+                    max_attempts = 5
+                    for attempt in range(1, max_attempts + 1):
+                        try:
+                            timeout_ms = base_timeout_ms + (attempt - 1) * 10000
+                            logger.info(
+                                f"➡️  Navigating to next page (attempt {attempt}/{max_attempts}, timeout={timeout_ms}ms): {target}"
+                            )
+                            await page.goto(
+                                target,
+                                wait_until="domcontentloaded",
+                                timeout=timeout_ms,
+                            )
+                            if not urlparse(page.url).path.startswith(SEARCH_PATH_PREFIX):
+                                return False
+                            _ = await quick_ready()
+                            return True
+                        except Exception as e:
+                            logger.warning(
+                                f"Pagination attempt {attempt}/{max_attempts} failed to {target}: {e}"
+                            )
+                            # Jittered backoff between attempts
+                            if attempt < max_attempts:
+                                sleep_s = 1.0 * attempt + random.random() * 0.8
+                                await asyncio.sleep(sleep_s)
+                            else:
+                                logger.error(
+                                    f"Failed to navigate after {max_attempts} attempts. Stopping pagination."
+                                )
+                                return False
 
                 while True:
                     logger.info(f"📄 Page {page_num}: {page.url}")
