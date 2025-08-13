@@ -1,4 +1,4 @@
-name: Job Pipeline (Scrape, Cleanup, Info, Score & Embeddings)
+name: Job Pipeline (Scrape, Cleanup, Info, Score & Vector Refresh)
 
 on:
   workflow_dispatch:  # Allow manual triggering
@@ -36,6 +36,7 @@ jobs:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_VECTOR_STORE_ID: ${{ secrets.OPENAI_VECTOR_STORE_ID }}
       run: |
         echo "Checking environment variables..."
         if [ -z "$SUPABASE_URL" ]; then
@@ -52,6 +53,11 @@ jobs:
           echo "Warning: OPENAI_API_KEY is not set (required for AI scoring)"
         else
           echo "OPENAI_API_KEY is configured"
+        fi
+        if [ -z "$OPENAI_VECTOR_STORE_ID" ]; then
+          echo "Warning: OPENAI_VECTOR_STORE_ID is not set (required for vector refresh)"
+        else
+          echo "OPENAI_VECTOR_STORE_ID is configured"
         fi
         
     - name: Run scraper and cleanup
@@ -82,21 +88,22 @@ jobs:
         python job_scorer.py
         echo "AI job scoring completed successfully"
         
-    - name: Generate job embeddings
+    - name: Refresh OpenAI vector store
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_VECTOR_STORE_ID: ${{ secrets.OPENAI_VECTOR_STORE_ID }}
       run: |
-        echo "Starting job embedding generation..."
-        python job_embedding_generator.py
-        echo "Job embedding generation completed successfully"
+        echo "Starting vector store refresh..."
+        python openai_vectorstore_refresh.py
+        echo "Vector store refresh completed successfully"
         
     - name: Send notification on success
       if: success()
       run: |
         echo "✅ Job pipeline completed successfully!"
-        echo "📊 Jobs scraped, cleaned up, info filled, scored, and embeddings generated for CFO services"
+        echo "📊 Jobs scraped, cleaned up, info filled, scored, and vector store refreshed for CFO services"
         
     - name: Send notification on failure
       if: failure()
