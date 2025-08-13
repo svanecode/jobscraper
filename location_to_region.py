@@ -53,7 +53,7 @@ import os
 import re
 import json
 import unicodedata
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Set, Union
 
 from supabase import create_client, Client
 from openai import AsyncOpenAI
@@ -118,6 +118,7 @@ NON_CITY_PATTERNS = [
     r"\b(denmark|danmark|danish|scandinavia|europe|international|udland(et)?)\b",
     r"\b(office|kontor|location|area|region|zone)\b",
     r"\b(center|centre|park|plaza|street|road|avenue|vej|gade)\b",
+    r"\b(eller|og|and|or)\b",
     r"^\d{4}\b",
 ]
 
@@ -138,6 +139,8 @@ def _clean_city_token(token: str) -> str:
     t = re.sub(r"\s+og\s+mulighed\s+for\s+hjemmearbejde.*$", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+(remote|hybrid|onsite).*?$", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\s*\(.*?\)\s*", " ", t)
+    # Strip leading Danish/English prepositions
+    t = re.sub(r"^(i|ved|nær|på|hos|in|at|near|by|on)\s+", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+", " ", t).strip(" ,-/")
     return t
 
@@ -149,7 +152,7 @@ def _best_token_from_location(location: str) -> str:
     loc_l = loc.lower()
     # Region keyword shortcut disabled – always parse tokens
 
-    raw_tokens = re.split(r",|/|\s-\s| - |\sog\s|\sand\s|\|", loc, flags=re.IGNORECASE)
+    raw_tokens = re.split(r",|/|\s-\s| - |\sog\s|\seller\s|\sand\s|\sor\s|\|", loc, flags=re.IGNORECASE)
     tokens = [_clean_city_token(t) for t in raw_tokens if _clean_city_token(t)]
 
     normalized: List[str] = []
@@ -172,6 +175,39 @@ def _best_token_from_location(location: str) -> str:
             return cand
 
     return ""
+
+def _all_city_tokens_from_location(location: str, max_tokens: int = 5) -> List[str]:
+    """Extract multiple plausible city tokens from a free-form location string.
+
+    Returns a de-duplicated list (preserving order) of normalized tokens.
+    """
+    loc = (location or "").strip()
+    if not loc:
+        return []
+
+    raw_tokens = re.split(r",|/|\s-\s| - |\sog\s|\seller\s|\sand\s|\sor\s|\|", loc, flags=re.IGNORECASE)
+    tokens = [_clean_city_token(t) for t in raw_tokens if _clean_city_token(t)]
+
+    seen: Set[str] = set()
+    out: List[str] = []
+
+    for t in tokens:
+        tl = t.lower()
+        if tl in DEFAULT_ALIASES:
+            tl = DEFAULT_ALIASES[tl]
+
+        # pattern like "<base> <district>"
+        m = re.match(r"^([a-zæøå]+)\s+[a-zæøå]{1,3}$", tl)
+        if m:
+            tl = m.group(1)
+
+        if _is_valid_city(tl) and tl not in seen:
+            seen.add(tl)
+            out.append(tl)
+        if len(out) >= max_tokens:
+            break
+
+    return out
 
 def _norm_city(city: str) -> str:
     return _normalize_city_input(city)
@@ -225,6 +261,8 @@ class RegionResolver:
         self.known_city_region: Dict[str, str] = dict(SEED_KNOWN_CITY_REGION)  # guardrail (empty)
         self.aliases: Dict[str, str] = dict(DEFAULT_ALIASES)  # empty
         self._warned_models: set[str] = set()
+        # Runtime mode for jobs.region schema; seeded from env, can auto-switch
+        self.jobs_region_is_array: bool = JOBS_REGION_IS_ARRAY
 
     def load_city_map(self, page_size: int = 1000):
         """Keyset pagination over city_to_region (by city) to surpass 1000-row cap."""
@@ -399,28 +437,85 @@ class RegionResolver:
         # Do not cache 'Ukendt'; return as-is
         return region
 
-    def update_job_region(self, job_id: str, region: str) -> bool:
-        # Validate and normalize region
-        if not region or region.strip() == "":
-            region = "Ukendt"
-        elif region not in VALID_REGIONS:
-            print(f"WARNING: Invalid region '{region}' for job {job_id}, using 'Ukendt'")
-            region = "Ukendt"
-        
-        try:
-            # For PostgreSQL arrays, we need to use proper array syntax
-            if JOBS_REGION_IS_ARRAY:
-                # Use PostgreSQL array literal syntax: {value}
-                payload = {"region": f"{{{region}}}"}
-                print(f"DEBUG: Updating job {job_id} with array payload: {payload}")
-            else:
-                payload = {"region": region}
-                print(f"DEBUG: Updating job {job_id} with text payload: {payload}")
-            resp = self.sb.table("jobs").update(payload).eq("job_id", job_id).execute()
-            return bool(resp.data)
-        except Exception as e:
-            print(f"ERROR: Failed to update job {job_id} with region '{region}': {e}")
-            return False
+    def update_job_region(self, job_id: str, regions: Union[str, List[str]]) -> bool:
+        """Update a job's region. Accepts a single region or a list of regions.
+
+        - Filters to VALID_REGIONS
+        - Removes duplicates while preserving order
+        - Writes TEXT[] if JOBS_REGION_IS_ARRAY else a single TEXT (first region)
+        """
+
+        # Normalize input -> list[str]
+        if isinstance(regions, str):
+            normalized_regions: List[str] = [regions]
+        else:
+            normalized_regions = list(regions or [])
+
+        # Clean, validate, and deduplicate
+        seen: Set[str] = set()
+        deduped_valid_regions: List[str] = []
+        for r in normalized_regions:
+            if not isinstance(r, str):
+                continue
+            r_clean = r.strip()
+            if not r_clean:
+                continue
+            if r_clean not in VALID_REGIONS:
+                print(f"WARNING: Invalid region '{r_clean}' for job {job_id}, skipping")
+                continue
+            if r_clean not in seen:
+                seen.add(r_clean)
+                deduped_valid_regions.append(r_clean)
+
+        # Fallback if nothing valid
+        if not deduped_valid_regions:
+            deduped_valid_regions = ["Ukendt"]
+
+        def _to_pg_array_literal(values: List[str]) -> str:
+            # Always double-quote and escape for safety
+            def esc(s: str) -> str:
+                return '"' + s.replace('\\', r'\\').replace('"', r'\"') + '"'
+            return "{" + ",".join(esc(v) for v in values) + "}"
+
+        def _do_update(array_mode: bool) -> bool:
+            try:
+                if array_mode:
+                    # Send as JSON array for PostgREST
+                    payload = {"region": deduped_valid_regions}
+                    print(f"DEBUG: Updating job {job_id} with JSON array payload: {payload}")
+                else:
+                    # TEXT column: pick the first valid region
+                    if len(deduped_valid_regions) > 1:
+                        print(
+                            f"WARNING: Multiple regions {deduped_valid_regions} for job {job_id} but schema is TEXT; using the first"
+                        )
+                    payload = {"region": deduped_valid_regions[0]}
+                    print(f"DEBUG: Updating job {job_id} with text payload: {payload}")
+
+                resp = self.sb.table("jobs").update(payload).eq("job_id", job_id).execute()
+                return bool(resp.data)
+            except Exception as e:
+                print(
+                    f"ERROR: Failed to update job {job_id} with regions {deduped_valid_regions}: {e}"
+                )
+                # If we fail with array literal/text mismatch, auto-switch and retry once
+                emsg = str(e).lower()
+                if not array_mode and ("malformed array literal" in emsg or "22p02" in emsg or "array value must start" in emsg):
+                    print("INFO: Detected array column for jobs.region at runtime; switching to array mode and retrying once.")
+                    self.jobs_region_is_array = True
+                    try:
+                        payload = {"region": deduped_valid_regions}
+                        print(f"DEBUG: Retrying job {job_id} with JSON array payload: {payload}")
+                        resp = self.sb.table("jobs").update(payload).eq("job_id", job_id).execute()
+                        return bool(resp.data)
+                    except Exception as e2:
+                        print(
+                            f"ERROR: Retry failed for job {job_id} with array payload {deduped_valid_regions}: {e2}"
+                        )
+                        return False
+                return False
+
+        return _do_update(self.jobs_region_is_array)
 
 
 # --------- Keyset scan over jobs (>1000) ---------
@@ -499,31 +594,43 @@ async def main():
         job_id = row["job_id"]
         location = (row.get("location") or "").strip()
         description = (row.get("description") or "")
+        # Auto-detect array mode if we see a list in the row
+        try:
+            region_sample = row.get("region")
+            if isinstance(region_sample, list):
+                resolver.jobs_region_is_array = True
+        except Exception:
+            pass
 
-        # extract best city token
-        city = _best_token_from_location(location)
+        # extract multiple city tokens
+        city_tokens = _all_city_tokens_from_location(location)
 
-        # short-circuit: if the "city" is actually a region keyword ("Vestjylland" etc.)
-        if city in REGION_KEYWORDS:
-            region = REGION_KEYWORDS[city]
-        else:
-            # if no city token, try a very light secondary pass from description
-            if not city:
-                # very conservative: look for "i <By>"
-                m = re.search(r"\bi\s+([A-ZÆØÅ][a-zæøå]{2,}(?:\s+[A-ZÆØÅ][a-zæøå]{2,})*)\b", description[:300])
-                if m:
-                    guess = _clean_city_token(m.group(1)).lower()
-                    if _is_valid_city(guess):
-                        city = guess
-            # resolve
-            region = await resolver.resolve_and_cache_region(
-                city=city,
-                location_hint=location,
-                description_hint=description,
-            )
+        # if no tokens, try a very light secondary pass from description
+        if not city_tokens:
+            m = re.search(r"\bi\s+([A-ZÆØÅ][a-zæøå]{2,}(?:\s+[A-ZÆØÅ][a-zæøå]{2,})*)\b", description[:300])
+            if m:
+                guess = _clean_city_token(m.group(1)).lower()
+                if _is_valid_city(guess):
+                    city_tokens = [guess]
 
-        if region != "Ukendt":
-            if resolver.update_job_region(job_id, region):
+        regions: List[str] = []
+        seen_regions: Set[str] = set()
+
+        for city in city_tokens:
+            if city in REGION_KEYWORDS:
+                region = REGION_KEYWORDS[city]
+            else:
+                region = await resolver.resolve_and_cache_region(
+                    city=city,
+                    location_hint=location,
+                    description_hint=description,
+                )
+            if region in VALID_REGIONS and region not in seen_regions and region != "Ukendt":
+                seen_regions.add(region)
+                regions.append(region)
+
+        if regions:
+            if resolver.update_job_region(job_id, regions):
                 updated += 1
 
     # Process sequentially (jobs/day is small); you can make this concurrent if needed
