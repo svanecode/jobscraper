@@ -183,6 +183,53 @@ class SupabaseRLSClient:
                     'deleted_at': None
                 }).in_('job_id', existing_job_ids_list).execute()
                 logger.info(f"🔄 Updated last_seen for {len(existing_job_ids_list)} existing jobs")
+
+                # Additionally, restore missing fields (e.g., description/company) if they are currently null/empty
+                # without overwriting existing non-empty values.
+                try:
+                    # Fetch current values for existing jobs
+                    details_result = (
+                        self.supabase
+                        .table(table_name)
+                        .select('job_id,title,company,location,description,job_url,company_url')
+                        .in_('job_id', existing_job_ids_list)
+                        .execute()
+                    )
+                    existing_details_map = {row['job_id']: row for row in (details_result.data or [])}
+
+                    restored_count = 0
+                    for job in jobs:
+                        job_id = job.get('job_id')
+                        if job_id not in existing_details_map:
+                            continue
+                        db_row = existing_details_map[job_id]
+
+                        update_fields: Dict[str, Any] = {}
+                        for key in ['title', 'company', 'location', 'description', 'job_url', 'company_url']:
+                            scraped_val_raw = job.get(key)
+                            scraped_val = (scraped_val_raw or '').strip() if isinstance(scraped_val_raw, str) else scraped_val_raw
+
+                            db_val_raw = db_row.get(key)
+                            db_val_empty = False
+                            if db_val_raw is None:
+                                db_val_empty = True
+                            elif isinstance(db_val_raw, str) and db_val_raw.strip() == '':
+                                db_val_empty = True
+
+                            if db_val_empty and scraped_val:
+                                update_fields[key] = scraped_val
+
+                        if update_fields:
+                            # Always keep restoration side-effects minimal
+                            update_fields['last_seen'] = current_time
+                            update_fields['deleted_at'] = None
+                            self.supabase.table(table_name).update(update_fields).eq('job_id', job_id).execute()
+                            restored_count += 1
+
+                    if restored_count:
+                        logger.info(f"🧩 Restored missing fields for {restored_count} existing jobs")
+                except Exception as e:
+                    logger.warning(f"Could not restore missing fields for existing jobs: {e}")
             
             total_processed = len(new_jobs) + len(existing_job_ids_list)
             logger.info(f"✅ Processed {total_processed} jobs total (new: {len(new_jobs)}, existing: {len(existing_job_ids_list)})")
