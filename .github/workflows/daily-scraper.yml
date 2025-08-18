@@ -2,12 +2,8 @@ name: Daily Jobindex Scraper
 
 on:
   schedule:
-    # Run every day at 5:00 AM Danish time (UTC+1/UTC+2)
-    # Cron format: minute hour day month day-of-week
-    # 4:00 UTC = 5:00 AM Danish time (winter), 6:00 AM Danish time (summer)
     - cron: '0 4 * * *'
   
-  # Allow manual trigger
   workflow_dispatch:
     inputs:
       max_pages:
@@ -24,7 +20,7 @@ on:
 jobs:
   scrape-jobs:
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # 2 hours max runtime
+    timeout-minutes: 120
     
     steps:
     - name: Checkout code
@@ -98,17 +94,11 @@ jobs:
         
     - name: Commit and push results
       run: |
-        # Add any new files or changes
         git add -A
-        
-        # Check if there are changes to commit
         if git diff --staged --quiet; then
           echo "No changes to commit"
         else
-          # Commit with timestamp
           git commit -m "🤖 Daily job scraping update - $(date '+%Y-%m-%d %H:%M:%S UTC')"
-          
-          # Push to main branch
           git push origin main
           echo "✅ Results pushed to repository"
         fi
@@ -143,12 +133,4 @@ jobs:
         echo "- **Max Pages:** ${{ github.event.inputs.max_pages || '50' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Start Page:** ${{ github.event.inputs.start_page || '1' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
-        echo "- **Results Pushed:** Yes" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "jobindex_scraper.log" ]; then
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Recent Log Entries:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -20 jobindex_scraper.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi 
+        echo "- **Results Pushed:** Yes" >> $GITHUB_STEP_SUMMARY 
