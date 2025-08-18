@@ -1,0 +1,154 @@
+name: Daily Jobindex Scraper
+
+on:
+  schedule:
+    # Run every day at 5:00 AM Danish time (UTC+1/UTC+2)
+    # Cron format: minute hour day month day-of-week
+    # 4:00 UTC = 5:00 AM Danish time (winter), 6:00 AM Danish time (summer)
+    - cron: '0 4 * * *'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: 'Maximum pages to scrape'
+        required: false
+        default: '50'
+        type: string
+      start_page:
+        description: 'Page to start from'
+        required: false
+        default: '1'
+        type: string
+
+jobs:
+  scrape-jobs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hours max runtime
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget gnupg ca-certificates procps libxss1
+        
+    - name: Install Playwright
+      run: |
+        python -m pip install --upgrade pip
+        pip install playwright
+        playwright install chromium --with-deps
+        
+    - name: Install Python dependencies
+      run: |
+        pip install -r requirements.txt
+        
+    - name: Create .env file
+      run: |
+        cat > .env << EOF
+        OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+        CHROMA_HOST=${{ secrets.CHROMA_HOST }}
+        CHROMA_TENANT=${{ secrets.CHROMA_TENANT }}
+        CHROMA_DATABASE=${{ secrets.CHROMA_DATABASE }}
+        CHROMA_API_KEY=${{ secrets.CHROMA_API_KEY }}
+        EOF
+        
+    - name: Test ChromaDB connection
+      run: |
+        python -c "
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        try:
+            from chromadb import HttpClient
+            client = HttpClient(
+                ssl=True,
+                host=os.getenv('CHROMA_HOST'),
+                tenant=os.getenv('CHROMA_TENANT'),
+                database=os.getenv('CHROMA_DATABASE'),
+                headers={'x-chroma-token': os.getenv('CHROMA_API_KEY')}
+            )
+            print('✅ ChromaDB connection successful')
+        except Exception as e:
+            print(f'❌ ChromaDB connection failed: {e}')
+            exit(1)
+        "
+        
+    - name: Run scraper
+      id: scraper
+      run: |
+        python jobindex_scraper.py --scrape --max-pages ${{ github.event.inputs.max_pages || '50' }} --start-page ${{ github.event.inputs.start_page || '1' }}
+        echo "success=true" >> $GITHUB_OUTPUT
+        
+    - name: Configure Git
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+    - name: Commit and push results
+      run: |
+        # Add any new files or changes
+        git add -A
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # Commit with timestamp
+          git commit -m "🤖 Daily job scraping update - $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          
+          # Push to main branch
+          git push origin main
+          echo "✅ Results pushed to repository"
+        fi
+        
+    - name: Upload logs
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: scraper-logs
+        path: |
+          jobindex_scraper.log
+          *.log
+        retention-days: 30
+        
+    - name: Upload scraper output
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: scraper-output
+        path: |
+          *.json
+          *.csv
+        retention-days: 30
+        
+    - name: Create summary
+      if: always()
+      run: |
+        echo "## Scraping Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Run ID:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status:** ${{ steps.scraper.outputs.success }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Max Pages:** ${{ github.event.inputs.max_pages || '50' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Start Page:** ${{ github.event.inputs.start_page || '1' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Results Pushed:** Yes" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "jobindex_scraper.log" ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Recent Log Entries:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -20 jobindex_scraper.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi 
