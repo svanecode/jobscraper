@@ -25,8 +25,6 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
         
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -75,22 +73,6 @@ jobs:
         python jobindex_scraper.py --scrape --max-pages ${{ github.event.inputs.max_pages || '50' }} --start-page ${{ github.event.inputs.start_page || '1' }}
         echo "success=true" >> $GITHUB_OUTPUT
         
-    - name: Configure Git
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-    - name: Commit and push results
-      run: |
-        git add -A
-        if git diff --staged --quiet; then
-          echo "No changes to commit"
-        else
-          git commit -m "🤖 Daily job scraping update - $(date '+%Y-%m-%d %H:%M:%S UTC')"
-          git push origin main
-          echo "✅ Results pushed to repository"
-        fi
-        
     - name: Upload logs
       uses: actions/upload-artifact@v4
       if: always()
@@ -121,4 +103,4 @@ jobs:
         echo "- **Max Pages:** ${{ github.event.inputs.max_pages || '50' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Start Page:** ${{ github.event.inputs.start_page || '1' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
-        echo "- **Results Pushed:** Yes" >> $GITHUB_STEP_SUMMARY 
+        echo "- **Jobs stored in ChromaDB:** Yes" >> $GITHUB_STEP_SUMMARY 
