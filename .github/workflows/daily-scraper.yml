@@ -49,40 +49,28 @@ jobs:
       run: |
         pip install -r requirements.txt
         
-    - name: Create .env file
-      run: |
-        cat > .env << EOF
-        OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-        CHROMA_HOST=${{ secrets.CHROMA_HOST }}
-        CHROMA_TENANT=${{ secrets.CHROMA_TENANT }}
-        CHROMA_DATABASE=${{ secrets.CHROMA_DATABASE }}
-        CHROMA_API_KEY=${{ secrets.CHROMA_API_KEY }}
-        EOF
-        
     - name: Test ChromaDB connection
       run: |
         python -c "
-        import os
-        from dotenv import load_dotenv
-        load_dotenv()
-        
-        try:
-            from chromadb import HttpClient
-            client = HttpClient(
-                ssl=True,
-                host=os.getenv('CHROMA_HOST'),
-                tenant=os.getenv('CHROMA_TENANT'),
-                database=os.getenv('CHROMA_DATABASE'),
-                headers={'x-chroma-token': os.getenv('CHROMA_API_KEY')}
-            )
-            print('✅ ChromaDB connection successful')
-        except Exception as e:
-            print(f'❌ ChromaDB connection failed: {e}')
-            exit(1)
+        from chromadb import HttpClient
+        client = HttpClient(
+            ssl=True,
+            host='${{ secrets.CHROMA_HOST }}',
+            tenant='${{ secrets.CHROMA_TENANT }}',
+            database='${{ secrets.CHROMA_DATABASE }}',
+            headers={'x-chroma-token': '${{ secrets.CHROMA_API_KEY }}'}
+        )
+        print('✅ ChromaDB connection successful')
         "
         
     - name: Run scraper
       id: scraper
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        CHROMA_HOST: ${{ secrets.CHROMA_HOST }}
+        CHROMA_TENANT: ${{ secrets.CHROMA_TENANT }}
+        CHROMA_DATABASE: ${{ secrets.CHROMA_DATABASE }}
+        CHROMA_API_KEY: ${{ secrets.CHROMA_API_KEY }}
       run: |
         python jobindex_scraper.py --scrape --max-pages ${{ github.event.inputs.max_pages || '50' }} --start-page ${{ github.event.inputs.start_page || '1' }}
         echo "success=true" >> $GITHUB_OUTPUT
