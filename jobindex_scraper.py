@@ -36,6 +36,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Set specific loggers to reduce verbosity
+logging.getLogger('playwright').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('requests').setLevel(logging.WARNING)
+
 # Configuration from environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your_openai_api_key_here")
 CHROMA_HOST = os.getenv("CHROMA_HOST", "your_chroma_host_here")
@@ -117,7 +122,7 @@ class JobindexScraper:
                     await route.continue_()
             await self.page.route("**/*", route_interceptor)
             
-            logger.info("✅ Playwright browser initialized with MANUAL stealth settings.")
+            logger.info("Playwright browser initialized with stealth settings.")
             
         except Exception as e:
             logger.error(f"Failed to initialize browser: {e}")
@@ -220,7 +225,7 @@ class JobindexScraper:
                     # Check if it's actually clickable
                     if await button.is_enabled(timeout=1000):
                         await button.click(timeout=2000)
-                        logger.info(f"✅ Dismissed cookie banner using selector: {selector}")
+                        logger.debug(f"Dismissed cookie banner using selector: {selector}")
                         await asyncio.sleep(0.5)
                         dismissed = True
                         break
@@ -239,7 +244,7 @@ class JobindexScraper:
                         if button_text and any(word in button_text.lower() for word in ['accept', 'accepter', 'godkend', 'allow', 'ok', 'close', 'dismiss']):
                             if await button.is_visible(timeout=1000) and await button.is_enabled(timeout=1000):
                                 await button.click(timeout=2000)
-                                logger.info(f"✅ Dismissed cookie banner using fallback text detection: {button_text}")
+                                logger.debug(f"Dismissed cookie banner using fallback text detection: {button_text}")
                                 await asyncio.sleep(0.5)
                                 dismissed = True
                                 break
@@ -300,7 +305,7 @@ class JobindexScraper:
                     if element and await element.is_visible(timeout=500):
                         # Try clicking on the overlay itself
                         await element.click(timeout=1000)
-                        logger.info(f"Clicked overlay: {selector}")
+                        logger.debug(f"Clicked overlay: {selector}")
                         await asyncio.sleep(0.5)
                 except Exception:
                     continue
@@ -335,54 +340,26 @@ class JobindexScraper:
         job_urls = set()
         all_found_urls = set()  # For debugging
         
-        # DEBUG: Let's see what's actually on the page
-        logger.info("🔍 DEBUGGING: Analyzing page content...")
-        
         try:
             # Get all links on the page for debugging
             all_links = await self.page.query_selector_all('a[href]')
-            logger.info(f"📋 Found {len(all_links)} total links on the page")
-            
-            # Show first 10 links for debugging
-            for i, link in enumerate(all_links[:10]):
-                try:
-                    href = await link.get_attribute('href')
-                    text = await link.text_content()
-                    classes = await link.get_attribute('class')
-                    data_click = await link.get_attribute('data-click')
-                    logger.info(f"🔗 Link {i+1}: href='{href}', text='{text}', class='{classes}', data-click='{data_click}'")
-                except Exception as e:
-                    logger.debug(f"Error getting link {i+1} details: {e}")
+            logger.debug(f"Found {len(all_links)} total links on the page")
             
             # Also check for any elements with "job" in the class or text
             job_elements = await self.page.query_selector_all('[class*="job"], [class*="stilling"], [class*="seejob"]')
-            logger.info(f"🎯 Found {len(job_elements)} elements with job-related classes")
-            
-            for i, element in enumerate(job_elements[:5]):
-                try:
-                    tag_name = await element.evaluate('el => el.tagName')
-                    classes = await element.get_attribute('class')
-                    text = await element.text_content()
-                    logger.info(f"🎯 Job element {i+1}: <{tag_name}> class='{classes}' text='{text}'")
-                except Exception as e:
-                    logger.debug(f"Error getting job element {i+1} details: {e}")
+            logger.debug(f"Found {len(job_elements)} elements with job-related classes")
             
         except Exception as e:
-            logger.error(f"Debug analysis failed: {e}")
+            logger.debug(f"Debug analysis failed: {e}")
         
         # First, try to find the main job listings container
         try:
             # Use the precise selector that gives exactly 20 links (same as find_links.py)
-            logger.info("🎯 Using precise 'seejobdesktop' selector for exactly 20 job links...")
             seejobdesktop_links = await self.page.query_selector_all('a.seejobdesktop')
-            logger.info(f"Found {len(seejobdesktop_links)} links with class 'seejobdesktop'")
+            logger.info(f"Found {len(seejobdesktop_links)} job links on page")
             
-            if len(seejobdesktop_links) == 20:
-                logger.info("✅ Perfect! Found exactly 20 job links!")
-            elif len(seejobdesktop_links) > 20:
-                logger.warning(f"⚠️  Found {len(seejobdesktop_links)} links (more than expected 20)")
-            else:
-                logger.warning(f"❌ Found only {len(seejobdesktop_links)} links (less than expected 20)")
+            if len(seejobdesktop_links) != 20:
+                logger.warning(f"Expected 20 links, found {len(seejobdesktop_links)}")
             
             # Extract URLs from the seejobdesktop links
             for link in seejobdesktop_links:
@@ -400,7 +377,7 @@ class JobindexScraper:
         
         # If still no results, try the most specific "Se job" approach
         if len(job_urls) == 0:
-            logger.info("🎯 Trying specific 'Se job' button extraction...")
+            logger.info("Trying fallback job extraction...")
             try:
                 # Use only the most precise selector that gives exactly 20 links
                 se_job_selectors = [
@@ -410,7 +387,7 @@ class JobindexScraper:
                 for selector in se_job_selectors:
                     try:
                         buttons = await self.page.query_selector_all(selector)
-                        logger.info(f"Found {len(buttons)} buttons with selector: {selector}")
+                        logger.debug(f"Found {len(buttons)} buttons with selector: {selector}")
                         
                         for button in buttons:
                             try:
@@ -424,15 +401,15 @@ class JobindexScraper:
                                         actual_job_url = await self._follow_jobindex_redirect(full_url)
                                         if actual_job_url:
                                             job_urls.add(actual_job_url)
-                                            logger.info(f"✅ Added actual job URL from redirect: {actual_job_url}")
+                                            logger.debug(f"Added actual job URL from redirect: {actual_job_url}")
                                         else:
                                             # If redirect fails, keep the redirect URL as fallback
                                             job_urls.add(full_url)
-                                            logger.info(f"⚠️ Added redirect URL as fallback: {full_url}")
+                                            logger.debug(f"Added redirect URL as fallback: {full_url}")
                                     else:
                                         if self._is_valid_job_url(href):
                                             job_urls.add(full_url)
-                                            logger.info(f"✅ Added direct job URL: {full_url}")
+                                            logger.debug(f"Added direct job URL: {full_url}")
                             except Exception as e:
                                 logger.debug(f"Error extracting href from button with selector {selector}: {e}")
                                 continue
@@ -444,12 +421,6 @@ class JobindexScraper:
             except Exception as e:
                 logger.debug(f"Specific 'Se job' extraction failed: {e}")
         
-        # Debug logging
-        logger.info(f"🔍 Found {len(all_found_urls)} total URLs before filtering")
-        if len(all_found_urls) > 0:
-            sample_urls = list(all_found_urls)[:5]  # Show first 5 for debugging
-            logger.info(f"📋 Sample URLs found: {sample_urls}")
-        
         # Filter and validate URLs
         filtered_urls = []
         for url in job_urls:
@@ -459,10 +430,7 @@ class JobindexScraper:
         # Sort URLs to ensure consistent ordering
         filtered_urls.sort()
         
-        logger.info(f"✅ Found {len(filtered_urls)} valid job URLs after filtering")
-        if len(filtered_urls) > 0:
-            sample_filtered = filtered_urls[:5]  # Show first 5 filtered URLs
-            logger.info(f"📋 Sample filtered URLs: {sample_filtered}")
+        logger.info(f"Extracted {len(filtered_urls)} valid job URLs")
         
         return filtered_urls
     
@@ -492,7 +460,7 @@ class JobindexScraper:
     async def _follow_jobindex_redirect(self, redirect_url: str) -> Optional[str]:
         """Follow Jobindex redirect URLs to get the actual job posting URL."""
         try:
-            logger.info(f"🔄 Following redirect: {redirect_url}")
+            logger.debug(f"Following redirect: {redirect_url}")
             
             # Create a new page context for the redirect to avoid interfering with main scraping
             redirect_page = await self.context.new_page()
@@ -509,10 +477,10 @@ class JobindexScraper:
                 
                 # Check if we got redirected to an actual job posting
                 if final_url != redirect_url and self._is_valid_job_url(final_url):
-                    logger.info(f"✅ Redirect successful: {redirect_url} → {final_url}")
+                    logger.debug(f"Redirect successful: {redirect_url} → {final_url}")
                     return final_url
                 else:
-                    logger.warning(f"⚠️ Redirect didn't lead to valid job URL: {final_url}")
+                    logger.debug(f"Redirect didn't lead to valid job URL: {final_url}")
                     return None
                     
             finally:
@@ -520,7 +488,7 @@ class JobindexScraper:
                 await redirect_page.close()
                 
         except Exception as e:
-            logger.error(f"❌ Error following redirect {redirect_url}: {e}")
+            logger.error(f"Error following redirect {redirect_url}: {e}")
             return None
     
     async def extract_job_content(self, url: str) -> Optional[str]:
@@ -671,7 +639,7 @@ class JobindexScraper:
                 embeddings=vectors,
                 metadatas=metadatas
             )
-            logger.info(f"Stored {len(chunks_list)} chunks for {url} with detailed metadata.")
+            logger.debug(f"Stored {len(chunks_list)} chunks for {url}")
         except Exception as e:
             logger.error(f"Error storing in Chroma for {url}: {e}")
 
@@ -679,24 +647,30 @@ class JobindexScraper:
         self.init_chroma()
         await self.init_browser()
         
+        logger.info(f"Starting job scraping: {max_pages} pages from page {start_page}")
+        logger.info(f"Estimated jobs to process: {max_pages * 20}")
+        
         total_stored = 0
         page_errors = 0
         max_page_errors = 3  # Allow some page errors before giving up
         
         try:
             for page_num in range(start_page, start_page + max_pages):
-                logger.info(f"--- Processing page {page_num} ---")
+                progress = ((page_num - start_page) / max_pages) * 100
+                logger.info(f"Progress: {progress:.1f}% - Processing page {page_num}/{start_page + max_pages - 1}")
                 
                 try:
                     job_urls = await self.extract_job_urls_from_page(page_num)
                     if not job_urls:
-                        logger.warning("No more job URLs found, stopping.")
+                        logger.info("No more job URLs found, stopping.")
                         break
                     
                     # Reset page error counter on successful page
                     page_errors = 0
                     
-                    for job_url in job_urls:
+                    logger.info(f"Processing {len(job_urls)} jobs from page {page_num}")
+                    
+                    for i, job_url in enumerate(job_urls):
                         if job_url in self.processed_urls:
                             continue
                         self.processed_urls.add(job_url)
@@ -704,20 +678,21 @@ class JobindexScraper:
                         try:
                             existing = self.collection.get(where={"url": job_url}, limit=1)
                             if existing['ids']:
-                                logger.info(f"Job already in DB, skipping: {job_url}")
+                                logger.debug(f"Job already in DB, skipping: {job_url}")
                                 continue
                         except Exception as e:
                             logger.warning(f"Could not check for existing job: {e}")
 
-                        logger.info(f"Processing job: {job_url}")
+                        logger.info(f"Job {i+1}/{len(job_urls)}: Processing {job_url}")
                         content = await self.extract_job_content(job_url)
                         
                         if content:
                             self.store_job_in_chroma(job_url, content)
                             total_stored += 1
+                            logger.info(f"Job {i+1}/{len(job_urls)}: Stored successfully")
                         else:
                             self.failed_urls.add(job_url)
-                            logger.error(f"Failed to get content for {job_url}")
+                            logger.error(f"Job {i+1}/{len(job_urls)}: Failed to get content")
                         
                         # Periodically clean up page interferences
                         if total_stored % 10 == 0:  # Every 10 jobs
@@ -725,6 +700,7 @@ class JobindexScraper:
                         
                         await asyncio.sleep(DELAY_BETWEEN_JOB_REQUESTS)
                     
+                    logger.info(f"Completed page {page_num}, total jobs stored: {total_stored}")
                     await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
                     
                 except Exception as e:
@@ -746,12 +722,11 @@ class JobindexScraper:
         finally:
             if self.browser:
                 await self.browser.close()
-            logger.info(f"--- SCRAPING FINISHED ---")
-            logger.info(f"Stored {total_stored} new jobs.")
+            logger.info(f"Scraping completed - stored {total_stored} new jobs")
             if self.failed_urls:
-                logger.warning(f"Failed URLs ({len(self.failed_urls)}): {list(self.failed_urls)}")
+                logger.warning(f"Failed URLs: {len(self.failed_urls)}")
             if page_errors > 0:
-                logger.warning(f"Encountered {page_errors} page errors during scraping.")
+                logger.warning(f"Page errors encountered: {page_errors}")
 
 async def main():
     parser = argparse.ArgumentParser(description="Jobindex Scraper")
